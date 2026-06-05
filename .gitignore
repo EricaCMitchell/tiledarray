@@ -32,6 +32,9 @@
 *.a
 *.lib
 
+# Python cache
+**/__pycache__
+
 # Executables
 *.exe
 *.out
