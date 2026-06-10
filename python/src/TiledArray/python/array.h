@@ -27,23 +27,15 @@
 
 #include <TiledArray/conversions/eigen.h>
 #include <TiledArray/dist_array.h>
+
+#include <complex>
+#include <cstring>
 #include <string>
 #include <vector>
 
 namespace TiledArray {
 namespace python {
 namespace array {
-
-// template<typename T>
-// py::array_t<T> make_tile(Tensor<T> &tile) {
-//   auto buffer_info = make_buffer_info(tile);
-//   return py::array_t<T>(
-//     buffer_info.shape,
-//     buffer_info.strides,
-//     (T*)buffer_info.ptr,
-//     py::cast(tile)
-//   );
-// }
 
 template <typename T>
 auto make_tile(py::buffer data) {
@@ -58,14 +50,14 @@ auto make_tile(py::buffer data) {
 // std::function<py::buffer(const Range&)>
 template <class Array>
 void init_tiles(Array &a, py::object f) {
+  using T = typename Array::element_type;
   py::gil_scoped_release gil;
   auto op = [f](const Range &range) {
-    Tensor<double> tile;
+    Tensor<T> tile;
     {
       py::gil_scoped_acquire acquire;
-      // py::print(f);
       py::buffer buffer = f(range);
-      tile = make_tile<double>(buffer);
+      tile = make_tile<T>(buffer);
     }
     return tile;
   };
@@ -86,6 +78,19 @@ std::shared_ptr<Array> make_array(const Trange &... args, World *world,
   return array;
 }
 
+template <class Array>
+std::shared_ptr<Array> make_array_from_trange(const TiledRange &tr,
+                                              World *world, py::object op) {
+  if (!world) {
+    world = &get_default_world();
+  }
+  auto array = std::make_shared<Array>(*world, tr);
+  if (!op.is_none()) {
+    init_tiles(*array, op);
+  }
+  return array;
+}
+
 template <class Array, class S = std::vector<size_t> >
 inline S shape(const Array &a) {
   auto e = a.elements_range().extent();
@@ -93,7 +98,6 @@ inline S shape(const Array &a) {
   for (size_t i = 0; i < e.size(); ++i) {
     shape[i] = e[i];
   }
-  // std::copy(e.begin(), e.end(), shape.begin());
   return shape;
 }
 
@@ -104,9 +108,9 @@ inline std::vector<std::vector<int64_t> > trange(const Array &a) {
 
 template <typename T>
 py::buffer_info make_buffer_info(Tensor<T> &tile) {
-  std::vector<size_t> strides;
+  std::vector<py::ssize_t> strides;
   for (auto s : tile.range().stride()) {
-    strides.push_back(sizeof(T) * s);
+    strides.push_back(static_cast<py::ssize_t>(sizeof(T) * s));
   }
   return py::buffer_info(
       tile.data(),                        /* Pointer to buffer */
@@ -119,26 +123,6 @@ py::buffer_info make_buffer_info(Tensor<T> &tile) {
   );
 }
 
-// template<class Array>
-// struct Iterator {
-//   std::shared_ptr<Array> array;
-//   typedef typename Array::iterator iterator;
-//   auto operator++() {
-//     return ++iterator;
-//   }
-//   auto operator*() {
-//     auto index = iterator.index();
-//     return std::make_tuple(
-//       std::vector<int64_t>(index.begin(), index.end()),
-//       py::array(
-//       )
-//     );
-//   }
-//   bool operator==(Iterator other) const {
-//     return this->it == other.it;
-//   }
-// };
-
 template <class Array>
 inline py::iterator make_iterator(Array &array) {
   return py::make_iterator(array.begin(), array.end());
@@ -146,7 +130,8 @@ inline py::iterator make_iterator(Array &array) {
 
 template <class Array>
 inline void setitem(Array &array, std::vector<int64_t> idx, py::buffer data) {
-  auto tile = make_tile<double>(data);
+  using T = typename Array::element_type;
+  auto tile = make_tile<T>(data);
   array.set(idx, tile);
 }
 
@@ -163,12 +148,14 @@ inline py::array getitem(const Array &array, Idx idx) {
 
 template <class Array>
 py::buffer_info make_buffer(Array &a) {
-  typedef typename Array::scalar_type T;
+  typedef typename Array::element_type T;
   auto buffer = py::array_t<T>(shape(a));
+  // Sparse arrays omit below-threshold tiles entirely (e.g. fill(0) yields an
+  // empty array), so zero-initialize and only copy the tiles that are present.
+  std::memset(buffer.mutable_data(), 0, buffer.nbytes());
   for (size_t i = 0; i < a.size(); ++i) {
-    // if (a.is_zero(i)) continue;
+    if (a.is_zero(i)) continue;
     auto range = range::slice(a.trange().make_tile_range(i));
-    // py::print(i,range);
     buffer[range] = getitem(a, i);
   }
   return buffer.request();
@@ -179,15 +166,64 @@ using TileReference = typename Array::reference;
 
 template <class Array>
 py::array get_reference_data(TileReference<Array> &r) {
+  using T = typename Array::element_type;
   auto tile = r.get();
   auto shape = tile.range().extent();
   auto base = py::cast(r);
-  return py::array_t<double>(shape, tile.data(), base);
+  return py::array_t<T>(shape, tile.data(), base);
 }
 
 template <class Array>
 void set_reference_data(TileReference<Array> &r, py::buffer data) {
-  r = make_tile<double>(data);
+  using T = typename Array::element_type;
+  r = make_tile<T>(data);
+}
+
+template <class Array>
+std::shared_ptr<Array> from_numpy(py::array np_data,
+                                  std::vector<std::vector<int64_t>> trange_list,
+                                  World *world) {
+  using T = typename Array::element_type;
+  if (!world) world = &get_default_world();
+  auto tr = trange::make_trange(trange_list);
+  auto arr = std::make_shared<Array>(*world, tr);
+  py::gil_scoped_release gil;
+  arr->init_tiles([np_data](const Range &range) mutable -> Tensor<T> {
+    Tensor<T> tile;
+    {
+      py::gil_scoped_acquire acquire;
+      py::list slices;
+      const auto &lo = range.lobound();
+      const auto &hi = range.upbound();
+      for (size_t i = 0; i < range.rank(); ++i) {
+        slices.append(py::slice(static_cast<py::ssize_t>(lo[i]),
+                                static_cast<py::ssize_t>(hi[i]),
+                                py::ssize_t{1}));
+      }
+      py::array sliced = np_data[py::tuple(slices)];
+      tile = make_tile<T>(sliced);
+    }
+    return tile;
+  });
+  arr->world().gop.fence();
+  return arr;
+}
+
+template <class Array>
+void py_init_elements(Array &a, py::object f) {
+  using T = typename Array::element_type;
+  py::gil_scoped_release gil;
+  a.init_elements([f](const auto &idx) -> T {
+    T result;
+    {
+      py::gil_scoped_acquire acquire;
+      using IndexVec = std::vector<int64_t>;
+      IndexVec vidx(idx.begin(), idx.end());
+      result = py::cast<T>(f(vidx));
+    }
+    return result;
+  });
+  a.world().gop.fence();
 }
 
 template <class Array>
@@ -203,6 +239,10 @@ void make_array_class(py::object m, const char *name) {
                                           std::vector<std::vector<int64_t> > >),
               py::arg("trange"), py::arg("world") = nullptr,
               py::arg("op") = py::none())
+          .def(
+              py::init(&array::make_array_from_trange<Array>),
+              py::arg("trange"), py::arg("world") = nullptr,
+              py::arg("op") = py::none())
           .def_buffer(&array::make_buffer<Array>)
           .def_property_readonly("world", &Array::world,
                                  py::return_value_policy::reference)
@@ -214,10 +254,22 @@ void make_array_class(py::object m, const char *name) {
           // Array object needs be alive while iterator is used */
           .def("__iter__", &array::make_iterator<Array>, py::keep_alive<0, 1>())
           .def("__getitem__", &expression::getitem<Array>)
+          .def("__setitem__", &expression::setitem_contraction<Array>)
           .def("__setitem__", &expression::setitem<Array>)
           .def("__getitem__", &array::getitem<Array, std::vector<int64_t> >)
           .def("__setitem__", &array::setitem<Array>)
-      // ;
+          .def("clone", [](const Array &a) {
+            return std::make_shared<Array>(a.clone());
+          })
+          .def("truncate", [](Array &a) { a.truncate(); })
+          .def("is_zero", [](const Array &a, std::vector<int64_t> idx) {
+            return a.is_zero(idx);
+          })
+          .def_property_readonly("is_dense", &Array::is_dense)
+          .def_static("from_array", &array::from_numpy<Array>,
+                      py::arg("data"), py::arg("trange"),
+                      py::arg("world") = nullptr)
+          .def("init_elements", &array::py_init_elements<Array>)
       ;
 
   py::class_<typename Array::reference>(PyArray, "Reference",
@@ -231,11 +283,18 @@ void make_array_class(py::object m, const char *name) {
 void __init__(py::module m) {
   make_array_class<TArray<double> >(m, "TArray");
   make_array_class<TSpArray<double> >(m, "TSpArray");
+  make_array_class<TArray<float> >(m, "TArrayF");
+  make_array_class<TSpArray<float> >(m, "TSpArrayF");
+  make_array_class<TArray<std::complex<double> > >(m, "TArrayZ");
+  make_array_class<TSpArray<std::complex<double> > >(m, "TSpArrayZ");
+  make_array_class<TArray<std::complex<float> > >(m, "TArrayC");
+  make_array_class<TSpArray<std::complex<float> > >(m, "TSpArrayC");
 
-  // py::class_< Tensor<double>, std::shared_ptr<Tensor<double> > >(m, "Tensor",
-  // py::buffer_protocol())
-  //   .def_buffer(&array::make_buffer_info<double>)
-  //   ;
+  // Module-level sparse threshold control
+  m.def("get_sparse_threshold",
+        []() { return TiledArray::SparseShape<float>::threshold(); });
+  m.def("set_sparse_threshold",
+        [](float t) { TiledArray::SparseShape<float>::threshold(t); });
 }
 
 }  // namespace array
