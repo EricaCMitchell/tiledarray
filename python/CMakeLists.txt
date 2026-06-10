@@ -8,8 +8,8 @@ endif()
 
 FetchContent_Declare(
   pybind11
-  GIT_REPOSITORY      https://github.com/ValeevGroup/pybind11.git
-  GIT_TAG             ValeevGroup/v2.11
+  GIT_REPOSITORY      https://github.com/pybind/pybind11.git
+  GIT_TAG             v3.0.3
   )
 FetchContent_MakeAvailable(pybind11)
 

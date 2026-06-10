@@ -59,7 +59,9 @@ namespace range {
     py::list s;
     for (size_t i = 0; i < ndim(r); ++i) {
       s.append(
-        py::slice(start(r)[i], stop(r)[i], 1)
+        py::slice(static_cast<py::ssize_t>(start(r)[i]),
+                  static_cast<py::ssize_t>(stop(r)[i]),
+                  py::ssize_t{1})
       );
     }
     return py::tuple(s);
