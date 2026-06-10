@@ -35,6 +35,13 @@ set_target_properties(
   OUTPUT_NAME tiledarray
   )
 
+# how to install
+install(TARGETS python-tiledarray EXPORT tiledarray
+        COMPONENT python
+        LIBRARY DESTINATION "${TILEDARRAY_INSTALL_LIBDIR}"
+        ARCHIVE DESTINATION "${TILEDARRAY_INSTALL_LIBDIR}"
+        INCLUDES DESTINATION "${TILEDARRAY_INSTALL_INCLUDEDIR}")
+
 # tests
 if (BUILD_TESTING)
   # build step
@@ -51,15 +58,44 @@ if (BUILD_TESTING)
     endif(check_for_${_mod})
   endforeach(_mod)
 
-  # test step
+  set(TA_PYTHON_TEST_MODULES
+    test_world
+    test_array_construction
+    test_array_indexing
+    test_trange
+    test_expression
+    test_contraction
+    test_reductions
+    test_numpy_interop
+    test_sparse
+    test_lifetime
+    test_dtypes
+  )
+
+  foreach(_pymod ${TA_PYTHON_TEST_MODULES})
+    add_test(
+      NAME tiledarray/unit/python/${_pymod}
+      COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 1
+              ${Python_EXECUTABLE} -m pytest ${CMAKE_SOURCE_DIR}/tests/python/${_pymod}.py -v
+              --import-mode=importlib
+      WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
+    )
+    set_tests_properties(tiledarray/unit/python/${_pymod}
+            PROPERTIES FIXTURES_REQUIRED TA_UNIT_TESTS_PYTHON_EXEC
+            ENVIRONMENT "MAD_NUM_THREADS=2;PYTHONPATH=${PROJECT_BINARY_DIR}")
+  endforeach()
+
+  # multi-rank test (mirrors the C++ np=2 path)
   add_test(
-    NAME tiledarray/unit/python/run
-    # need to use pytest to find tiledarray module properly
-    COMMAND ${Python_EXECUTABLE} -m pytest ${PROJECT_SOURCE_DIR}/test_tiledarray.py -v
+    NAME tiledarray/unit/python/test_mpi
+    COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2
+            ${Python_EXECUTABLE} -m pytest ${CMAKE_SOURCE_DIR}/tests/python/test_mpi.py -v
+            --import-mode=importlib
     WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
   )
-  set_tests_properties(tiledarray/unit/python/run
+  set_tests_properties(tiledarray/unit/python/test_mpi
           PROPERTIES FIXTURES_REQUIRED TA_UNIT_TESTS_PYTHON_EXEC
-          ENVIRONMENT MAD_NUM_THREADS=2)
+          ENVIRONMENT "MAD_NUM_THREADS=2;PYTHONPATH=${PROJECT_BINARY_DIR}"
+          PROCESSORS 2)
 
 endif(BUILD_TESTING)
