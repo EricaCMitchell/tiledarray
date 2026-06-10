@@ -23,15 +23,13 @@
 #include "python.h"
 
 #include <TiledArray/tiled_range.h>
+#include <sstream>
 #include <string>
 #include <vector>
 
 namespace TiledArray {
 namespace python {
 namespace trange {
-
-// template<class ... Args>
-// inline TiledRange make_trange(Args ... args);
 
 auto list(const TiledRange &trange) {
   std::vector<std::vector<int64_t> > v;
@@ -62,13 +60,83 @@ inline TiledRange make_trange(std::vector<int64_t> shape, size_t block) {
   return TiledRange(trange1.begin(), trange1.end());
 }
 
-void __init__(py::module m) {
-  // py::class_<TiledRange>(m, "TiledRange")
-  //   .def(py::init(&make_trange< std::vector< std::vector<int64_t> > >))
-  //   ;
+inline std::string tr1_str(const TiledRange1 &tr1) {
+  std::ostringstream ss;
+  ss << tr1;
+  return ss.str();
+}
 
-  // py::implicitly_convertible< std::vector< std::vector<int64_t> >,
-  // TiledRange>();
+inline std::string tr_str(const TiledRange &tr) {
+  std::ostringstream ss;
+  ss << tr;
+  return ss.str();
+}
+
+// Return list of [lo, hi] pairs for each tile in TiledRange1
+inline py::list tr1_tiles(const TiledRange1 &tr1) {
+  py::list result;
+  for (auto it = tr1.begin(); it != tr1.end(); ++it) {
+    py::list pair;
+    pair.append(it->first);
+    pair.append(it->second);
+    result.append(pair);
+  }
+  return result;
+}
+
+void __init__(py::module m) {
+
+  py::class_<TiledRange1>(m, "TiledRange1")
+    .def(py::init([](std::vector<int64_t> boundaries) {
+      return TiledRange1(boundaries.begin(), boundaries.end());
+    }), py::arg("boundaries"))
+    .def_static("make_uniform",
+      [](size_t extent, size_t block) {
+        return TiledRange1::make_uniform(extent, block);
+      },
+      py::arg("extent"), py::arg("block"))
+    .def_property_readonly("tile_extent",
+      [](const TiledRange1 &tr1) { return tr1.tile_extent(); })
+    .def_property_readonly("extent",
+      [](const TiledRange1 &tr1) { return tr1.extent(); })
+    .def_property_readonly("tiles", &tr1_tiles)
+    .def("__str__", &tr1_str)
+    .def("__repr__", &tr1_str)
+    .def("__len__",
+      [](const TiledRange1 &tr1) { return tr1.tile_extent(); })
+    .def("__eq__",
+      [](const TiledRange1 &a, const TiledRange1 &b) { return a == b; })
+  ;
+
+  py::class_<TiledRange>(m, "TiledRange")
+    .def(py::init([](std::vector<TiledRange1> tr1s) {
+      return TiledRange(tr1s.begin(), tr1s.end());
+    }), py::arg("trange1_list"))
+    .def(py::init([](std::vector<std::vector<int64_t>> trange_list) {
+      return make_trange(trange_list);
+    }), py::arg("trange_list"))
+    .def_property_readonly("rank",
+      [](const TiledRange &tr) { return tr.rank(); })
+    .def_property_readonly("elements_range",
+      [](const TiledRange &tr) { return tr.elements_range(); })
+    .def_property_readonly("tiles_range",
+      [](const TiledRange &tr) { return tr.tiles_range(); })
+    .def("make_tile_range",
+      [](const TiledRange &tr, std::vector<int64_t> idx) {
+        return tr.make_tile_range(idx);
+      }, py::arg("idx"))
+    .def("__str__", &tr_str)
+    .def("__repr__", &tr_str)
+    .def("__eq__",
+      [](const TiledRange &a, const TiledRange &b) { return a == b; })
+    .def_property_readonly("data",
+      [](const TiledRange &tr) {
+        std::vector<TiledRange1> result(tr.data().begin(), tr.data().end());
+        return result;
+      })
+  ;
+
+  py::implicitly_convertible<std::vector<std::vector<int64_t>>, TiledRange>();
 }
 
 }  // namespace trange
