@@ -29,6 +29,7 @@
 #include <boost/spirit/include/phoenix_stl.hpp>
 #include <boost/algorithm/string/join.hpp>
 
+#include <complex>
 #include <tuple>
 #include <vector>
 
@@ -166,6 +167,12 @@ namespace einsum {
   void __init__(py::module m) {
     m.def("einsum", &einsum::einsum< TArray<double> >);
     m.def("einsum", &einsum::einsum< TSpArray<double> >);
+    m.def("einsum", &einsum::einsum< TArray<float> >);
+    m.def("einsum", &einsum::einsum< TSpArray<float> >);
+    m.def("einsum", &einsum::einsum< TArray<std::complex<double>> >);
+    m.def("einsum", &einsum::einsum< TSpArray<std::complex<double>> >);
+    m.def("einsum", &einsum::einsum< TArray<std::complex<float>> >);
+    m.def("einsum", &einsum::einsum< TSpArray<std::complex<float>> >);
   }
 
 }

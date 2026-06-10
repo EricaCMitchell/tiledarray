@@ -23,6 +23,8 @@
 #include "python.h"
 
 #include <tiledarray.h>
+
+#include <complex>
 #include <vector>
 #include <string>
 
@@ -90,6 +92,13 @@ namespace expression {
 
   };
 
+  // ContractionExpression: holds two Expression objects for A*B contractions
+  template<class Array>
+  struct ContractionExpression {
+    Expression<Array> lhs;
+    Expression<Array> rhs;
+  };
+
   template<size_t N, class Array, size_t ... Idx>
   auto index(const Expression<Array> &e, std::integer_sequence<size_t,Idx...> idx) {
     using Index = std::variant< std::make_integer_sequence<size_t,1+Idx>... >;
@@ -151,24 +160,71 @@ namespace expression {
   }
 
   template<class Array>
-  void make_array_expression_class(py::module m, const char *name) {
-    using Expression = Expression<Array>;
-    py::class_<Expression>(m, name)
-      .def("__add__", &Expression::add)
-      .def("__sub__", &Expression::sub)
-      .def("__mul__", &Expression::mul)
-      .def("__rmul__", &Expression::mul)
-      .def("__truediv__", &Expression::div)
-      .def("min", TA_PYTHON_EXPRESSION_REDUCE(Expression ,min))
-      .def("max", TA_PYTHON_EXPRESSION_REDUCE(Expression, max))
-      .def("norm", TA_PYTHON_EXPRESSION_REDUCE(Expression, norm))
-      .def("dot", TA_PYTHON_EXPRESSION_REDUCE2(Expression, dot))
+  inline void setitem_contraction(Array &array, std::string idx,
+                                  const ContractionExpression<Array> &ce) {
+    auto op = [&array, &idx](auto &&lhs_eval, auto &&rhs_eval) {
+      array(idx) = lhs_eval * rhs_eval;
+    };
+    evaluate(op, ce.lhs, ce.rhs);
+  }
+
+  template<class Array>
+  void make_array_expression_class(py::module m, const char *name,
+                                   const char *contraction_name) {
+    using ExprType = Expression<Array>;
+    using ContrType = ContractionExpression<Array>;
+    using T = typename Array::element_type;
+
+    py::class_<ContrType>(m, contraction_name)
+      ;  // just needs to exist as a Python type
+
+    auto cls = py::class_<ExprType>(m, name)
+      .def("__add__", &ExprType::add)
+      .def("__sub__", &ExprType::sub)
+      // mul_expr (Expression * Expression -> ContractionExpression) FIRST
+      .def("__mul__", [](const ExprType &self, const ExprType &other) {
+        return ContrType{self, other};
+      })
+      // Then scalar mul
+      .def("__mul__", &ExprType::mul)
+      .def("__rmul__", &ExprType::mul)
+      .def("__truediv__", &ExprType::div)
+      .def("__neg__", [](const ExprType &e) { return e.mul(-1.0); })
+      .def("norm",        TA_PYTHON_EXPRESSION_REDUCE(ExprType, norm))
+      .def("dot",         TA_PYTHON_EXPRESSION_REDUCE2(ExprType, dot))
+      .def("squared_norm",TA_PYTHON_EXPRESSION_REDUCE(ExprType, squared_norm))
+      .def("sum",         TA_PYTHON_EXPRESSION_REDUCE(ExprType, sum))
       ;
+
+    // Real-valued-only reductions
+    if constexpr (std::is_floating_point_v<T>) {
+      cls
+        .def("min",     TA_PYTHON_EXPRESSION_REDUCE(ExprType, min))
+        .def("max",     TA_PYTHON_EXPRESSION_REDUCE(ExprType, max))
+        .def("abs_min", TA_PYTHON_EXPRESSION_REDUCE(ExprType, abs_min))
+        .def("abs_max", TA_PYTHON_EXPRESSION_REDUCE(ExprType, abs_max))
+        .def("trace",   TA_PYTHON_EXPRESSION_REDUCE(ExprType, trace))
+        ;
+    }
   }
 
   inline void __init__(py::module m) {
-    make_array_expression_class< TArray<double> >(m, "Expression");
-    make_array_expression_class< TSpArray<double> >(m, "SparseExpression");
+    make_array_expression_class< TArray<double> >(
+        m, "Expression", "ContractionExpression");
+    make_array_expression_class< TSpArray<double> >(
+        m, "SparseExpression", "SparseContractionExpression");
+    make_array_expression_class< TArray<float> >(
+        m, "ExpressionF", "ContractionExpressionF");
+    make_array_expression_class< TSpArray<float> >(
+        m, "SparseExpressionF", "SparseContractionExpressionF");
+    make_array_expression_class< TArray<std::complex<double>> >(
+        m, "ExpressionZ", "ContractionExpressionZ");
+    make_array_expression_class< TSpArray<std::complex<double>> >(
+        m, "SparseExpressionZ", "SparseContractionExpressionZ");
+    make_array_expression_class< TArray<std::complex<float>> >(
+        m, "ExpressionC", "ContractionExpressionC");
+    make_array_expression_class< TSpArray<std::complex<float>> >(
+        m, "SparseExpressionC", "SparseContractionExpressionC");
   }
 
 }
