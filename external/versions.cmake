@@ -36,6 +36,14 @@ set(TA_TRACKED_TTG_URL https://github.com/TESSEorg/ttg)
 set(TA_TRACKED_TTG_TAG 3fe4a06dbf4b05091269488aab38223da1f8cb8e)
 set(TA_TRACKED_TTG_PREVIOUS_TAG 26da9b40872660b864794658d4fdeee1a95cb4d6)
 
+# Enzyme (LLVM-level autodiff plugin), used only when TA_ENABLE_ENZYME=ON.
+# Enzyme's plugin ABI tracks LLVM head, so this pin must be validated against the
+# LLVM/Clang in use (Enzyme requires LLVM >= 15); bumping it is a deliberate,
+# LLVM-coordinated event, mirror the MADNESS-pin discipline.
+set(TA_TRACKED_ENZYME_URL https://github.com/EnzymeAD/Enzyme.git CACHE STRING "GIT_REPOSITORY for cloning Enzyme source")
+set(TA_TRACKED_ENZYME_TAG v0.0.267 CACHE STRING "GIT_TAG (release tag or hash) for cloning Enzyme")
+set(TA_TRACKED_ENZYME_PREVIOUS_TAG v0.0.266)
+
 # oldest Boost we can tolerate ... old is fine but if Boost is missing build it requires something much younger
 # SeQuant requires at least 1.81, so go with that
 set(TA_OLDEST_BOOST_VERSION 1.81)

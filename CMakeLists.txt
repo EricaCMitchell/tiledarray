@@ -391,6 +391,11 @@ endif()
 #if (TA_TTG)
 #  include(${PROJECT_SOURCE_DIR}/cmake/modules/FindOrFetchTTG.cmake)
 #endif(TA_TTG)
+# 3. Enzyme (LLVM-level autodiff). Included last so the compiler is fully probed
+#    before the Clang/LLVM-version guard runs.
+if (TA_ENABLE_ENZYME)
+  include(${PROJECT_SOURCE_DIR}/cmake/modules/FindOrFetchEnzyme.cmake)
+endif(TA_ENABLE_ENZYME)
 
 ##########################
 # sources
