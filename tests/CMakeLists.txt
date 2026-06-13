@@ -96,6 +96,7 @@ set(ta_test_src_files  ta_test.cpp
     einsum.cpp
     dot_inner.cpp
     general_product.cpp
+    ad_contract.cpp
     linalg.cpp
     cp.cpp
     btas.cpp
