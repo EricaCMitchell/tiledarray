@@ -184,6 +184,21 @@ There is no Python-level test driver; `tests/` is all C++.
 - **ScaLAPACK (`TA_SCALAPACK=ON`) is off by default.** When on, it's
   resolved via `external/scalapackpp.cmake`; failures typically surface
   at link time rather than configure.
+- **Enzyme autodiff is off by default and toolchain-locked.**
+  `TA_ENABLE_AD=OFF` (native C++ AD layer, no external dep) and
+  `TA_ENABLE_ENZYME=OFF` (LLVM-level AD; implies `TA_ENABLE_AD`). Enzyme is a
+  *Clang/LLVM compiler plugin*, not an ordinary library: it requires a
+  `clang++` whose major version matches an installed LLVM (>= 15), is
+  **commit/tag-pinned** in `external/versions.cmake` (`TA_TRACKED_ENZYME_TAG`)
+  because its plugin ABI tracks LLVM head, and is resolved by
+  `cmake/modules/FindOrFetchEnzyme.cmake` (find → FetchContent, honoring
+  `TA_EXPERT`). Only the registration TU (`TiledArray/ad/enzyme_rules.cpp`) is
+  compiled with `-fpass-plugin=ClangEnzyme-<ver>.so`; the rest of the library
+  is unaffected. It is **ABI-affecting** (like `TA_ASSERT_POLICY`) — a TA built
+  with it on is not link-compatible with one built without — and **CI does not
+  exercise it** (no Enzyme cell, same caveat as GPU paths). The dependency is
+  private: it is intentionally absent from `tiledarray-config.cmake`, so
+  AD-free consumers need no LLVM/Clang toolchain.
 
 ## Coding conventions
 
@@ -660,6 +675,13 @@ style (`.clang-format` is the source of truth).
 - **Device path changes without a GPU build run.** CI has no GPU cell;
   ask the author to confirm `-DTA_CUDA=ON` or `-DTA_HIP=ON` still builds
   and the device-tagged tests pass locally.
+- **Enzyme pin drift / AD build run.** Any change to `TA_TRACKED_ENZYME_TAG`
+  in `external/versions.cmake` must name the matching LLVM version and confirm a
+  local `-DTA_ENABLE_ENZYME=ON` build (clang++ matching that LLVM) still
+  configures and builds the registration TU — CI has no Enzyme cell. Also watch
+  for the registration TU or AD layer leaking the Enzyme dependency into
+  `tiledarray-config.cmake`, or `-fpass-plugin` being applied to more than the
+  registration TU (it must stay scoped, like the GPU paths).
 - **New tests appended out of order** in `tests/CMakeLists.txt`. The
   order is load-bearing — fixtures set up by earlier cases are consumed
   by later ones. New tests go near related tests, not at the end by

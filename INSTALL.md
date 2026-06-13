@@ -89,6 +89,13 @@ Optional prerequisites:
     - [blacspp](https://github.com/wavefunction91/blacspp.git) -- a modern C++ wrapper for BLACS
 - Python3 interpreter -- to test (optionally-built) Python bindings
 - [TTG](https://github.com/TESSEorg/ttg.git) -- C++ implementation of the Template Task Graph programming model for fine-grained flow-graph composition of distributed memory programs (tag 3fe4a06dbf4b05091269488aab38223da1f8cb8e).
+- [Enzyme](https://github.com/EnzymeAD/Enzyme) -- LLVM-level automatic differentiation, for the optional AD path (`TA_ENABLE_ENZYME=ON`; tag `v0.0.267`, will be downloaded and built if missing). Because Enzyme is an LLVM/Clang *compiler plugin*, this path has extra toolchain requirements:
+    - the C++ compiler must be a `clang++` whose major version matches an installed LLVM (Enzyme requires LLVM >= 15); a GCC build cannot use Enzyme for the differentiated translation units;
+    - the matching LLVM/Clang development packages must be present so their CMake config targets resolve. On Ubuntu with system LLVM `N`, this means `libclang-N-dev` (Enzyme builds its Clang plugin only when it finds Clang's static libraries) and `libzstd-dev` (referenced by `LLVMSupport`'s link interface). Point `LLVM_DIR` (and, if needed, `Clang_DIR`) at that toolchain. Example:
+      ```
+      cmake ... -DTA_ENABLE_ENZYME=ON -DCMAKE_CXX_COMPILER=clang++ -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+      ```
+    - Only the AD registration translation unit is compiled with the Enzyme plugin; the rest of TiledArray (and MPI/MADNESS/BLAS) builds unchanged. CI does **not** exercise this path, so validate it locally.
 
 Many of these dependencies can be installed with a package manager,
 such as Homebrew on OS X or apt-get on Debian Linux distributions;
