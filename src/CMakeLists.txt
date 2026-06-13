@@ -251,6 +251,13 @@ if(TILEDARRAY_HAS_HIP OR TILEDARRAY_HAS_CUDA)
   endif(TILEDARRAY_HAS_CUDA)
 endif(TILEDARRAY_HAS_HIP OR TILEDARRAY_HAS_CUDA)
 
+# Enzyme custom-rule registration TU (autodiff plan B5). Only this TU is compiled
+# with the Enzyme pass plugin (see below); the rest of the library is unaffected.
+if(TILEDARRAY_HAS_ENZYME)
+  list(APPEND TILEDARRAY_SOURCE_FILES
+          TiledArray/ad/enzyme_rules.cpp)
+endif(TILEDARRAY_HAS_ENZYME)
+
 # feed TILEDARRAY_GIT_REVISION and TILEDARRAY_GIT_DESCRIPTION to TiledArray/version.cpp only to avoid recompiling everything
 set_source_files_properties(
         TiledArray/version.cpp
@@ -371,6 +378,25 @@ add_library(tiledarray ${TILEDARRAY_SOURCE_FILES} ${TILEDARRAY_HEADER_FILES})
 if( TARGET ttg-parsec )
   target_compile_definitions(${targetname} PUBLIC TTG_USE_PARSEC=1)
 endif()
+
+# Enzyme (autodiff plan B5): apply the Enzyme Clang pass plugin to *only* the
+# registration TU, not the whole target — MPI/MADNESS/BLAS translation units
+# compile plugin-free. The plugin .so must exist before that TU compiles, so
+# order the build against the ClangEnzyme target.
+# N.B. This is ABI-affecting: a `tiledarray` built with TA_ENABLE_ENZYME=ON is
+#      not link-compatible with one built without it (it adds the registration
+#      TU and compiles it under the plugin). Like TA_ASSERT_POLICY, do not mix
+#      these in one link; downstreams (e.g. MPQC) must match the setting.
+# N.B. Enzyme is a *private* compile-time dependency: nothing links against it
+#      and it is intentionally absent from tiledarray-config.cmake's
+#      find_dependency list, so consumers that do not use AD need no LLVM/Clang
+#      toolchain.
+if(TILEDARRAY_HAS_ENZYME)
+  set_source_files_properties(
+          TiledArray/ad/enzyme_rules.cpp
+          PROPERTIES COMPILE_OPTIONS "-fpass-plugin=${TA_ENZYME_PLUGIN}")
+  add_dependencies(${targetname} ${TA_ENZYME_PLUGIN_TARGET})
+endif(TILEDARRAY_HAS_ENZYME)
 
 # Add library to the list of installed components
 install(TARGETS tiledarray EXPORT tiledarray COMPONENT tiledarray
