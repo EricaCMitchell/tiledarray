@@ -97,6 +97,11 @@ set(ta_test_src_files  ta_test.cpp
     dot_inner.cpp
     general_product.cpp
     ad_contract.cpp
+    ad_ops.cpp
+    ad_forward.cpp
+    ad_reverse.cpp
+    ad_hvp.cpp
+    ad_sparse.cpp
     linalg.cpp
     cp.cpp
     btas.cpp
@@ -192,6 +197,31 @@ else()
           ENVIRONMENT "${TA_UNIT_TESTS_ENVIRONMENT}"
           )
 endif()
+
+# Standalone autodiff (AD) unit-test executable for fast iteration. It reuses
+# the Boost module/fixture main (ta_test.cpp) but compiles only the AD sources,
+# so the AD suite can be built and run without relinking the full monolithic
+# ta_test binary. EXCLUDE_FROM_ALL (via add_ta_executable): not built by default.
+set(ad_test_src_files
+    ta_test.cpp
+    ad_contract.cpp
+    ad_ops.cpp
+    ad_forward.cpp
+    ad_reverse.cpp
+    ad_hvp.cpp
+    ad_sparse.cpp
+)
+add_ta_executable(ad_test "${ad_test_src_files}" "tiledarray")
+if (Boost_IS_MODULARIZED)
+  target_link_libraries(ad_test PRIVATE Boost::unit_test_framework)
+endif()
+target_include_directories(ad_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_BINARY_DIR}
+    ${PROJECT_BINARY_DIR}/tests
+    )
+target_compile_definitions(ad_test PRIVATE TILEDARRAY_NO_USER_ERROR_MESSAGES=1
+    MADNESS_DISPLAY_EXCEPTION_BREAK_MESSAGE=0)
 
 if (NOT TARGET test-cases-tiledarray)
   add_custom_target_subproject(tiledarray test-cases)
