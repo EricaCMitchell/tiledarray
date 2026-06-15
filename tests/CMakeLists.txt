@@ -223,6 +223,21 @@ target_include_directories(ad_test PRIVATE
 target_compile_definitions(ad_test PRIVATE TILEDARRAY_NO_USER_ERROR_MESSAGES=1
     MADNESS_DISPLAY_EXCEPTION_BREAK_MESSAGE=0)
 
+# JAX dual-verification producer (ad_jax_dual_verification_plan.md). A standalone
+# main (not a Boost module) that runs the AD layer on deterministic inputs and
+# emits golden.json for the Python/JAX verifier. EXCLUDE_FROM_ALL (via
+# add_ta_executable): built on demand with `ninja ad_jax_produce`, so it never
+# participates in the `ta_test` link and is immune to the arena_tensor_kernels
+# break.
+add_ta_executable(ad_jax_produce "ad_jax_verify/produce.cpp" "tiledarray")
+target_include_directories(ad_jax_produce PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_BINARY_DIR}
+    ${PROJECT_BINARY_DIR}/tests)
+target_compile_definitions(ad_jax_produce PRIVATE
+    TILEDARRAY_NO_USER_ERROR_MESSAGES=1
+    MADNESS_DISPLAY_EXCEPTION_BREAK_MESSAGE=0)
+
 if (NOT TARGET test-cases-tiledarray)
   add_custom_target_subproject(tiledarray test-cases)
 endif()
