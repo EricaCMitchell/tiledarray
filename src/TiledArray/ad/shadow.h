@@ -62,10 +62,13 @@
 ///      structure but never widens it past the step-1 lower bound, so the result
 ///      is a deterministic function of the operand shapes, not of accumulation
 ///      order.
-/// Phase 0 is dense, so only step 1 (already implemented by `make_shadow`) is
-/// exercised here; the symbolic-zero `Cotangent` path defers materialization
-/// until first write and so trivially satisfies the lower-bound rule. Step 2's
-/// explicit re-screen is Phase 1 work, to be tested on block-sparse inputs.
+/// The symbolic-zero `Cotangent` path defers materialization until first write
+/// and so trivially satisfies the step-1 lower-bound rule; step 2's re-screen
+/// happens automatically because cotangent contributions are produced by the
+/// sparse-aware B1 ops (`ad::add`/`contract`/...), whose results are screened by
+/// the ordinary `SparseShape` norm threshold. The resulting structure is a
+/// deterministic function of the operand shapes — verified on block-sparse
+/// inputs in `tests/ad_sparse.cpp`.
 
 namespace TiledArray::ad {
 
@@ -102,16 +105,15 @@ class Cotangent {
 
   /// Fan-in one cotangent contribution.
   ///
-  /// First call moves the delta in (no arithmetic); later calls accumulate in
-  /// place. `delta` is consumed.
+  /// First call moves the delta in (no arithmetic); later calls sum it in via
+  /// `ad::add`. Using the functional `add` (rather than the raw expression
+  /// engine) keeps `Cotangent` element-type-agnostic, so it also works when
+  /// `Array` is itself a `Dual` (forward-over-reverse). `delta` is consumed.
   void accumulate(Array delta) {
     if (!value_) {
       value_ = std::move(delta);
     } else {
-      const std::string annot =
-          ad::detail::canonical_annotation(value_->trange().rank());
-      // in-place add_to via the expression engine: Ā += delta
-      (*value_)(annot) += delta(annot);
+      value_ = ad::add(*value_, delta);  // Ā += delta
     }
   }
 
