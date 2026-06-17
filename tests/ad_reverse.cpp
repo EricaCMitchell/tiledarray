@@ -224,6 +224,75 @@ BOOST_AUTO_TEST_CASE(complex_dot_and_inner_product_vjp) {
   }
 }
 
+// Complex finite-difference check for the non-holomorphic reductions
+// (squared_norm, norm2) — background §6.2 flags these as the dangerous ones,
+// where a missing conjugate in the VJP fails *silently* (stays finite, no NaN).
+// Both are real-valued, so under the Part A "plus" pairing the gradient Ā
+// satisfies the real directional-derivative identity
+//   d/dε f(A + ε·dA)|₀ = Re⟨Ā, dA⟩,   ⟨x,y⟩ = Σ conj(x)·y,
+// for a complex perturbation dA. The analytic Re(inner_product(Ā, dA)) must
+// therefore match a central finite difference of f along dA.
+BOOST_AUTO_TEST_CASE(complex_reduction_vjp_vs_finite_difference) {
+  CArray A = rand_array<CArray>(trSq), dA = rand_array<CArray>(trSq);
+  const double eps = 1e-4;
+
+  auto grad_dir = [&](auto record) {
+    ad::Tape<CArray> tape;
+    auto va = ad::make_leaf(tape, A);
+    auto s = record(tape, va);
+    tape.backward(s.id);  // seed s̄ = 1 (real)
+    const CArray& g = tape.adjoint(va.id).value();
+    return std::real(ad::inner_product(g, dA));  // Re⟨Ā, dA⟩
+  };
+  auto fd = [&](auto op) {
+    CArray Ap, Am;
+    Ap("i,j") = A("i,j") + eps * dA("i,j");
+    Am("i,j") = A("i,j") - eps * dA("i,j");
+    return (op(Ap) - op(Am)) / (2 * eps);
+  };
+
+  BOOST_CHECK_CLOSE(grad_dir([](ad::Tape<CArray>&, ad::Var<CArray>& v) {
+                      return ad::squared_norm(v);
+                    }),
+                    fd([](const CArray& x) { return ad::squared_norm(x); }),
+                    1e-4);
+  BOOST_CHECK_CLOSE(grad_dir([](ad::Tape<CArray>&, ad::Var<CArray>& v) {
+                      return ad::norm2(v);
+                    }),
+                    fd([](const CArray& x) { return ad::norm2(x); }), 1e-4);
+}
+
+// Convention litmus (Krämer §6.3, called out as *mandatory* in the plan's
+// Verification section): the gradient of f(z)=½z² at z=1+i must be 1−i under
+// the "plus"/conjugating convention fixed in Part A. A result of 1+i would mean
+// the opposite "minus"/JAX convention had crept in. The mismatch stays finite
+// (no NaN) and is otherwise silent, so this assertion is the decisive guard.
+//
+// Mechanism: y = Σ ½z² seeded with s̄ = 1 broadcasts C̄ = 1 onto the
+// elementwise op, whose VJP Ā = conj(f'(A))∘C̄ = conj(z) yields exactly the
+// convention's gradient.
+BOOST_AUTO_TEST_CASE(complex_half_z_squared_convention_litmus) {
+  CArray z(*GlobalFixture::world, TiledRange{{0, 1}, {0, 1}});
+  for (auto idx : *z.pmap()) {
+    auto range = z.trange().make_tile_range(idx);
+    CArray::value_type tile(range, std::complex<double>(1.0, 1.0));
+    z.set(idx, tile);
+  }
+  z.world().gop.fence();
+
+  auto f = [](std::complex<double> v) { return 0.5 * v * v; };
+  auto df = [](std::complex<double> v) { return v; };
+
+  ad::Tape<CArray> tape;
+  auto vz = ad::make_leaf(tape, z);
+  auto vy = ad::sum(ad::elementwise(vz, f, df));  // y = Σ ½z²
+  tape.backward(vy.id);                            // seed s̄ = 1
+
+  const std::complex<double> g = tape.adjoint(vz.id).value().find(0).get()[0];
+  BOOST_CHECK_CLOSE(g.real(), 1.0, 1e-12);
+  BOOST_CHECK_CLOSE(g.imag(), -1.0, 1e-12);
+}
+
 // Fan-out: A is consumed by two ops, so reverse must SUM the two cotangents.
 // y = sum( (A∘P) + (A∘Q) )  =>  dy/dA = P + Q.
 BOOST_AUTO_TEST_CASE(fan_out_sums_cotangents) {
