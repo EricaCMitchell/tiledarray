@@ -405,6 +405,32 @@ def _(s):
     return _complex_vjp_checks(s, lambda A, B: jnp.sum(jnp.conj(A) * B))
 
 
+# ---- 5.6b the 1/2 z^2 convention litmus ----------------------------------- #
+# Krämer's litmus (plan / AUTODIFF_BACKGROUND.md section 6.3): grad of
+# f(z) = 1/2 z^2 at z = 1+i is 1-i under the "plus"/PyTorch convention TA adopts
+# (1+i under JAX's "minus" convention). Verified three ways: (a) the tape value
+# equals the documented constant 1-i; (b) the same adapter as the VJP seam
+# bridges JAX's minus-convention vjp to the tape; (c) the raw (un-adapted) JAX
+# cotangent equals 1+i and so must differ from the tape -- the negative control.
+@scenario("complex_half_sq_litmus")
+def _(s):
+    inp, out, _ = make_accessors(s)
+    Z, Cbar = inp["Z"], inp["Cbar"]
+    grad = tensor(out["grad"])
+    f = lambda z: 0.5 * z ** 2
+    _, vjp = jax.vjp(f, Z)
+    (ja,) = vjp(jnp.conj(Cbar))  # seed jax.vjp with conj(s-bar)
+    checks = [
+        Check("grad(+adapter)", jnp.conj(ja), grad),
+        Check("litmus(=1-i)", grad, jnp.full(grad.shape, 1.0 - 1.0j)),
+    ]
+    raw_gap = float(np.abs(np.asarray(ja).ravel()
+                           - np.asarray(grad).ravel()).max())
+    checks.append(Check.assertion("seam(no-adapter differs)", raw_gap > 1e-3,
+                                  raw_gap, "minus conv. gives 1+i"))
+    return checks
+
+
 # ---- 5.4 Hessian-vector product ------------------------------------------- #
 @scenario("hvp")
 def _(s):

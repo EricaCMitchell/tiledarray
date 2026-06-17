@@ -257,6 +257,11 @@ auto dsq = [](double x) { return 2.0 * x; };
 auto cube = [](double x) { return x * x * x; };
 auto dcube = [](double x) { return 3.0 * x * x; };
 
+// Complex elementwise f(z) = 1/2 z^2 and its (holomorphic) derivative f'(z) = z.
+// This is Krämer's "1/2 z^2" convention litmus (AUTODIFF_BACKGROUND.md section 6.3).
+auto half_sq = [](std::complex<double> z) { return 0.5 * z * z; };
+auto half_sq_deriv = [](std::complex<double> z) { return z; };
+
 // ===========================================================================
 // Scenario builders, grouped to mirror the six ad_*.cpp test files.
 // ===========================================================================
@@ -603,6 +608,39 @@ void reverse_vjp_complex(World& world) {
   }
 }
 
+// Krämer's "1/2 z^2" convention litmus (AUTODIFF_BACKGROUND.md section 6.3,
+// Table 1 / Fig. 4). The gradient of f(z) = 1/2 z^2 at z = 1 + i is:
+//   * 1 - i  under the "plus"/conjugating (PyTorch/TF) convention -- THIS tape;
+//   * 1 + i  under the "minus"/non-conjugating (JAX) convention.
+// The tape's elementwise VJP is `Ā = conj(f'(z)) * C̄` (tape.h), so with the
+// gradient seed C̄ = 1 it yields conj(f'(z)) = conj(z) = 1 - i, pinning the
+// plus convention deliberately and visibly (the doc's explicit recommendation).
+void complex_litmus(World& world) {
+  using cd = std::complex<double>;
+  const TiledRange tr1{{0, 1}};  // a single 1-D element
+  auto fill1 = [&](cd v) {
+    CArray a(world, tr1);
+    auto range = a.trange().make_tile_range(0);
+    CArray::value_type tile(range);
+    tile[0] = v;
+    a.set(0, tile);
+    world.gop.fence();
+    return a;
+  };
+  CArray Z = fill1(cd(1.0, 1.0));     // z = 1 + i
+  CArray Cbar = fill1(cd(1.0, 0.0));  // gradient seed s̄ = 1 (real)
+
+  ad::Tape<CArray> tape;
+  auto vz = ad::make_leaf(tape, Z);
+  auto vy = ad::elementwise(vz, half_sq, half_sq_deriv);  // y = 1/2 z^2
+  tape.backward(vy.id, Cbar);
+
+  Scenario("complex_half_sq_litmus")
+      .in("Z", Z).in("Cbar", Cbar)
+      .out("grad", tape.adjoint(vz.id).value())
+      .commit();
+}
+
 // E(X) = ||X·X||^2; reverse-mode gradient g = dE/dX (seed C̄ = 2C).
 RArray grad_E(World& world, const RArray& X) {
   ad::Tape<RArray> tape;
@@ -674,6 +712,7 @@ int main(int argc, char** argv) {
   forward_jvp_complex(world);
   reverse_vjp(world);
   reverse_vjp_complex(world);
+  complex_litmus(world);
   hvp(world);
   sparse_contract_vjp(world);
 

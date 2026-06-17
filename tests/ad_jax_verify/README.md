@@ -91,36 +91,78 @@ In practice every scenario currently agrees to ≤ ~1e-15.
 ## The complex conjugation seam
 
 This is the highest-value part of the cross-check: a complex-conjugation error
-is exactly the kind of self-consistent bug the internal oracles can miss.
+is exactly the kind of self-consistent bug the internal oracles can miss. It is
+also the one place where the two AD systems being compared do **not** speak the
+same language, so it needs care.
 
-TiledArray's tape uses the `Re⟨X̄, dX⟩` pairing, under which the complex VJPs
-conjugate:
+### Two conventions, by design
+
+For a non-holomorphic `f` (anything using `conj`, `abs`, an inner product, or a
+norm — i.e. most real code), the complex VJP has *two* standard, mutually
+incompatible sign conventions, and a framework must pick one
+(`AUTODIFF_BACKGROUND.md` §6.3, after Krämer 2024):
+
+- **"plus" / conjugating — PyTorch & TensorFlow.** The gradient is
+  `conj(∂f/∂x)`. This is the convention that makes the gradient a true
+  steepest-ascent direction, which is what you want for optimization.
+  **TiledArray's tape uses this convention** (it pairs cotangents via
+  `Re⟨X̄, dX⟩`).
+- **"minus" / non-conjugating — JAX.** `jax.vjp` is the complex-**linear**
+  cotangent map `ct ↦ Σ ct·(∂f/∂x)` (no conjugation), prioritizing a literal
+  vector–Jacobian product.
+
+You cannot have both; the choice is deliberate and must be documented, because a
+convention mismatch produces a finite, plausible-looking, **silently wrong**
+gradient (no `NaN`), per `AUTODIFF_BACKGROUND.md` §6.5. The
+`complex_half_sq_litmus` scenario is the canonical tell (Krämer's `½z²` test):
+the gradient of `f(z)=½z²` at `z=1+i` is `1−i` under the plus convention TA
+adopts, and `1+i` under JAX's minus convention.
+
+Under TA's plus convention the complex VJPs conjugate:
 
 - `dot` (bilinear, `s = Σ A·B`): `Ā = s̄·conj(B)`, `B̄ = s̄·conj(A)`;
 - `inner_product` (sesquilinear, `s = Σ conj(A)·B`): `Ā = conj(s̄)·B`,
-  `B̄ = s̄·A`.
+  `B̄ = s̄·A`;
+- `elementwise` `f`: `Ā = conj(f'(A))·C̄` (the `½z²` litmus above).
 
-JAX, by contrast, defines `jax.vjp` for complex inputs as the complex-**linear**
-cotangent map `ct ↦ Σ ct·∂f/∂x` (no conjugation). The two are bridged by a
-small, documented **adapter**, pinned empirically against the actual numbers:
+### The adapter (minus → plus)
+
+Because JAX is a minus-convention oracle, every complex VJP comparison routes
+JAX's result through a small, documented **adapter** to express it in TA's plus
+convention:
 
 ```
 x̄_tape  ==  conj( jax.vjp(f)(conj(s̄)) )
 ```
 
-i.e. seed JAX's vjp with `conj(s̄)` and conjugate each returned cotangent. (For a
-holomorphic `f` with Wirtinger derivative `∂f/∂x`, JAX returns
+i.e. seed JAX's vjp with `conj(s̄)` and conjugate each returned cotangent.
+Derivation, for a holomorphic `f` with Wirtinger derivative `∂f/∂x`: JAX returns
 `conj(s̄)·∂f/∂x`, and `conj(conj(s̄)·∂f/∂x) = s̄·conj(∂f/∂x)`, which is exactly the
-tape's adjoint.) For **real** `s̄`, `conj` is the identity, so all real scenarios
-need no adapter.
+plus-convention adjoint. (For the non-holomorphic `inner_product`, tracing JAX's
+primitive vjps — `conj`↦`conj`, holomorphic multiply↦linear — gives the same
+result; see the worked check in `verify.py`.) For **real** `s̄`, `conj` is the
+identity, so all real scenarios need no adapter and are unaffected.
 
 Two assertions make the seam itself a tested property:
 
 1. with the adapter, JAX and the tape agree to roundoff (`Abar(+adapter)`,
-   `Bbar(+adapter)` — ~1e-16);
+   `Bbar(+adapter)`, `grad(+adapter)` — ~1e-16);
 2. without the output conjugation the cotangents differ by ~O(1)
    (`seam(no-adapter differs)`) — this negative control proves the adapter is
-   load-bearing and the match is not vacuous.
+   load-bearing and the match is not vacuous (it is precisely the
+   `plus` vs `minus` gap).
+
+### Forward mode needs no adapter
+
+The convention split is a **reverse-mode** phenomenon. The JVP (pushforward) is
+just the differential `dC = (∂f/∂A) dA + (∂f/∂B) dB`, identical in both
+conventions, so the complex JVP scenarios (`complex_conj_jvp`,
+`complex_dot_jvp`, `complex_inner_product_jvp`) compare directly against
+`jax.jvp` with no adapter. What they *do* pin is the `AUTODIFF_BACKGROUND.md`
+§6.2 structural feature absent from the real rules: a non-holomorphic op carries
+a **conjugated tangent** (`conj(dA)`), e.g. `inner_product`'s tangent is
+`⟨dA,B⟩ + ⟨A,dB⟩`. `jax.jvp` reproduces it because the jvp of `conj` is the
+conjugate of the tangent.
 
 ## Notes
 
