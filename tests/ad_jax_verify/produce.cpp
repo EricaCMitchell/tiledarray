@@ -423,6 +423,49 @@ void forward_jvp(World& world) {
   }
 }
 
+// Complex forward mode. Unlike the VJP, the JVP (pushforward) is convention-
+// independent -- it is just the differential dC = (df/dA) dA + (df/dB) dB -- so
+// the "plus" (PyTorch) vs "minus" (JAX) gradient-convention split (section 6.3)
+// does NOT appear here and no adapter is needed: jax.jvp is a direct oracle.
+// What these scenarios DO exercise is the section-6.2 structural feature of
+// complex AD: for a non-holomorphic op the *tangent itself appears conjugated*
+// (`conj(dA)`), which has no analogue in the real rules.
+void forward_jvp_complex(World& world) {
+  const TiledRange tr2{{0, 2, 5}, {0, 2, 3}};
+  CArray A = make_dense<CArray>(world, tr2), B = make_dense<CArray>(world, tr2);
+  CArray dA = make_dense<CArray>(world, tr2), dB = make_dense<CArray>(world, tr2);
+  auto da = ad::make_dual(A, dA), db = ad::make_dual(B, dB);
+
+  // conj JVP (antilinear): tangent = conj(dA) -- the conjugated tangent in
+  // its purest form (section 2.4 / 6.2).
+  {
+    auto dc = ad::conj(da);
+    Scenario("complex_conj_jvp")
+        .in("A", A).in("dA", dA)
+        .out("primal", dc.primal).out("tangent", *dc.tangent)
+        .commit();
+  }
+  // dot JVP (bilinear, holomorphic): tangent = dot(dA,B) + dot(A,dB), NO
+  // conjugation -- the holomorphic control case (section 2.1).
+  {
+    auto ds = ad::dot(da, db);
+    Scenario("complex_dot_jvp")
+        .in("A", A).in("B", B).in("dA", dA).in("dB", dB)
+        .out_scalar("primal", ds.primal).out_scalar("tangent", ds.tangent)
+        .commit();
+  }
+  // inner_product JVP (sesquilinear): tangent = <dA,B> + <A,dB> = sum(conj(dA)*B)
+  // + sum(conj(A)*dB) -- conj(dA) appears, the section-6.2 case that cannot be
+  // obtained by analogy to the real rule.
+  {
+    auto ds = ad::inner_product(da, db);
+    Scenario("complex_inner_product_jvp")
+        .in("A", A).in("B", B).in("dA", dA).in("dB", dB)
+        .out_scalar("primal", ds.primal).out_scalar("tangent", ds.tangent)
+        .commit();
+  }
+}
+
 void reverse_vjp(World& world) {
   const TiledRange trA{{0, 2, 5}, {0, 3, 4}};   // (i,k)
   const TiledRange trB{{0, 3, 4}, {0, 2}};      // (k,j)
@@ -628,6 +671,7 @@ int main(int argc, char** argv) {
 
   forward_values(world);
   forward_jvp(world);
+  forward_jvp_complex(world);
   reverse_vjp(world);
   reverse_vjp_complex(world);
   hvp(world);

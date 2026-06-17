@@ -268,6 +268,32 @@ def _(s):
                        (inp["dA"], inp["dB"]), out)
 
 
+# ---- 5.2c complex forward mode / JVP -------------------------------------- #
+# The JVP is the convention-INDEPENDENT pushforward, so the plus/minus
+# gradient-convention split of section 6.3 does not appear and no adapter is
+# needed -- jax.jvp is a direct oracle. These pin the section-6.2 feature that a
+# non-holomorphic op carries a *conjugated tangent* (conj(dA)); jax.jvp
+# reproduces it because the jvp of jnp.conj is conj of the tangent.
+@scenario("complex_conj_jvp")
+def _(s):
+    inp, out, _ = make_accessors(s)
+    return _jvp_checks(jnp.conj, (inp["A"],), (inp["dA"],), out)
+
+
+@scenario("complex_dot_jvp")
+def _(s):
+    inp, out, _ = make_accessors(s)
+    return _jvp_checks(lambda A, B: jnp.sum(A * B), (inp["A"], inp["B"]),
+                       (inp["dA"], inp["dB"]), out)
+
+
+@scenario("complex_inner_product_jvp")
+def _(s):
+    inp, out, _ = make_accessors(s)
+    return _jvp_checks(lambda A, B: jnp.sum(jnp.conj(A) * B),
+                       (inp["A"], inp["B"]), (inp["dA"], inp["dB"]), out)
+
+
 # ---- 5.3 reverse mode / VJP (real) ---------------------------------------- #
 def _vjp_array(f, primals, cotangent, out, names, tol=TIGHT):
     _, vjp = jax.vjp(f, *primals)
