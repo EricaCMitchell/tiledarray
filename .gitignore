@@ -1,6 +1,9 @@
 # Prerequisites
 *.d
 
+# Build
+*build*/
+
 # Compiled Object files
 *.slo
 *.lo
@@ -32,7 +35,8 @@
 *.a
 *.lib
 
-# Python cache
+# Cache
+**/.cache
 **/__pycache__
 
 # Executables
@@ -46,3 +50,9 @@
 # IDEs
 *.idea
 *.vscode
+*.devcontainer
+
+# AI folders
+**/.claude
+**/.rtk
+**/.wolf
