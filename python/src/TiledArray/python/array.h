@@ -137,12 +137,16 @@ inline void setitem(Array &array, std::vector<int64_t> idx, py::buffer data) {
 
 template <class Array, class Idx>
 inline py::array getitem(const Array &array, Idx idx) {
-  auto tile = array.find(idx);
-  if (!tile.probe()) {
+  // Absent tiles aren't stored, so find()+get() would block forever; reject
+  // them up front (is_zero is replicated shape metadata, valid on every rank).
+  if (array.is_zero(idx)) {
     auto str = py::str(py::cast(idx));
     throw std::runtime_error("TArray[" + py::cast<std::string>(str) +
-                             "] tile is not set");
+                             "] tile is zero/not set");
   }
+  // get() blocks, driving the runtime to deliver remote tiles so any rank can
+  // read any tile.
+  auto tile = array.find(idx);
   return py::array(make_buffer_info(tile.get()));
 }
 
