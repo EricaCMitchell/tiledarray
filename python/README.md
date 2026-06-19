@@ -1,15 +1,15 @@
-# PyTiledArray
+# PyTA
 
 Python bindings for [TiledArray](https://github.com/ValeevGroup/tiledarray) — a distributed,
 tiled, order-N tensor library built on MADWorld (MADNESS parallel runtime).
 
-PyTiledArray exposes TiledArray's core functionality to Python: distributed array construction,
+PyTA exposes TiledArray's core functionality to Python: distributed array construction,
 a lazy expression DSL for tensor arithmetic, Einstein summation, NumPy interoperability, and
 sparse array support.
 
 ## Building
 
-PyTiledArray is built as part of TiledArray when `-DTA_PYTHON=ON` is passed to CMake.
+PyTA is built as part of TiledArray when `-DTA_PYTHON=ON` is passed to CMake.
 `pytest` and `numpy` must be importable by the Python interpreter CMake selects.
 
 ```sh
@@ -61,7 +61,7 @@ print(c["i,j"].norm())
 
 ## Array types
 
-PyTiledArray exposes four element dtypes, each in dense (`TArray*`) and sparse (`TSpArray*`)
+PyTA exposes four element dtypes, each in dense (`TArray*`) and sparse (`TSpArray*`)
 variants:
 
 | Class       | C++ type           | NumPy dtype  |
@@ -277,7 +277,7 @@ b.fill(99.0)   # does not affect a
 
 ## MPI / distributed usage
 
-PyTiledArray initializes the MADWorld runtime and MPI on import, using
+PyTA initializes the MADWorld runtime and MPI on import, using
 `MPI_COMM_WORLD`. If MPI is already initialized before importing PyTA, it
 must have been started with `MPI_THREAD_MULTIPLE`.
 
