@@ -30,6 +30,7 @@ class TestMPI:
     def test_world_size_at_least_one(self, Array, world):
         assert world.size >= 1
 
+    @pytest.mark.distributed
     def test_distributed_fill_gather(self, Array, world):
         a = Array([8, 8], block=2, world=world)
         a.fill(1.0, False)
@@ -39,6 +40,7 @@ class TestMPI:
         assert np.allclose(buf, 1.0)
         world.fence()
 
+    @pytest.mark.distributed
     def test_remote_tile_index_access(self, Array, world):
         # Every rank must be able to read every tile by index, including tiles
         # owned by another rank.  find()+get() drives the point-to-point
@@ -53,6 +55,7 @@ class TestMPI:
                 assert np.allclose(tile, 3.0)
         world.fence()
 
+    @pytest.mark.distributed
     def test_numpy_diagonal_is_replicated(self, Array, world):
         # Regression for the multi-rank failure: numpy.array(dist).diagonal()
         # must yield the full diagonal identically on every rank, not an empty
@@ -86,6 +89,7 @@ class TestMPI:
             assert np.allclose(np.array(a[0, 0]), 0.0)
         world.fence()
 
+    @pytest.mark.distributed
     def test_distributed_contraction(self, Array, world):
         a = Array([8, 8], block=4, world=world)
         b = Array([8, 8], block=4, world=world)
@@ -99,6 +103,7 @@ class TestMPI:
         assert np.allclose(buf, 8.0)
         world.fence()
 
+    @pytest.mark.distributed
     def test_from_array_distributed(self, Array, world):
         data = np.ones((8, 8), dtype=np.float64)
         a = Array.from_array(data, [[0, 4, 8], [0, 4, 8]], world)

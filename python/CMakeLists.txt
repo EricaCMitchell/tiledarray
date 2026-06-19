@@ -70,32 +70,36 @@ if (BUILD_TESTING)
     test_sparse
     test_lifetime
     test_dtypes
+    test_mpi
   )
 
+  # Register every module at both world sizes, mirroring the C++ suite
+  # (tests/CMakeLists.txt): np=1 deselects @distributed cases, np>=2 deselects
+  # @serial cases.  Untagged tests therefore run at every world size.
+  set(_pytest_np_1_args -m "not distributed")
+  set(_pytest_np_2_args -m "not serial")
   foreach(_pymod ${TA_PYTHON_TEST_MODULES})
-    add_test(
-      NAME tiledarray/unit/python/${_pymod}
-      COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 1
-              ${Python_EXECUTABLE} -m pytest ${CMAKE_SOURCE_DIR}/tests/python/${_pymod}.py -v
-              --import-mode=importlib
-      WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
-    )
-    set_tests_properties(tiledarray/unit/python/${_pymod}
-            PROPERTIES FIXTURES_REQUIRED TA_UNIT_TESTS_PYTHON_EXEC
-            ENVIRONMENT "MAD_NUM_THREADS=2;PYTHONPATH=${PROJECT_BINARY_DIR}")
+    foreach(p RANGE 1 2)
+      add_test(
+        NAME tiledarray/unit/python/${_pymod}-np${p}
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${p}
+                ${Python_EXECUTABLE} -m pytest ${CMAKE_SOURCE_DIR}/tests/python/${_pymod}.py -v
+                ${_pytest_np_${p}_args}
+                --import-mode=importlib
+        WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
+      )
+      set(_pymod_env "MAD_NUM_THREADS=2;PYTHONPATH=${PROJECT_BINARY_DIR}")
+      if (p GREATER 1)
+        set(_pymod_env "${_pymod_env};TA_UT_DISTRIBUTED=1")
+      endif()
+      set_tests_properties(tiledarray/unit/python/${_pymod}-np${p}
+              PROPERTIES FIXTURES_REQUIRED TA_UNIT_TESTS_PYTHON_EXEC
+              ENVIRONMENT "${_pymod_env}")
+      if (p GREATER 1)
+        set_tests_properties(tiledarray/unit/python/${_pymod}-np${p}
+                PROPERTIES PROCESSORS ${p})
+      endif()
+    endforeach()
   endforeach()
-
-  # multi-rank test (mirrors the C++ np=2 path)
-  add_test(
-    NAME tiledarray/unit/python/test_mpi
-    COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2
-            ${Python_EXECUTABLE} -m pytest ${CMAKE_SOURCE_DIR}/tests/python/test_mpi.py -v
-            --import-mode=importlib
-    WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
-  )
-  set_tests_properties(tiledarray/unit/python/test_mpi
-          PROPERTIES FIXTURES_REQUIRED TA_UNIT_TESTS_PYTHON_EXEC
-          ENVIRONMENT "MAD_NUM_THREADS=2;PYTHONPATH=${PROJECT_BINARY_DIR}"
-          PROCESSORS 2)
 
 endif(BUILD_TESTING)
