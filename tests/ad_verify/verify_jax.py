@@ -2,11 +2,12 @@
 # This file is a part of TiledArray.
 # Copyright (C) 2026  Virginia Tech
 #
-# verify.py
-# Independent JAX oracle for the AD dual-verification harness
-# (ad_jax_dual_verification_plan.md).
+# verify_jax.py
+# JAX oracle for the AD dual-verification harness (tests/ad_verify/).
+# Runs alongside verify_torch.py; together they approach the TiledArray tape
+# from opposite sides of the complex-conjugation seam.
 #
-# Reads golden.json (emitted by the C++ producer `ad_jax_produce`), recomputes
+# Reads golden.json (emitted by the C++ producer `ad_produce`), recomputes
 # every scenario's value / JVP / VJP / HVP from an independently written
 # jax.numpy reference using jax.grad / jax.jvp / jax.vjp, and asserts agreement
 # with the TiledArray tape to scenario-appropriate tolerances. JAX is a genuinely
@@ -14,7 +15,6 @@
 # absolute sense, not merely internally self-consistent. Exit status is nonzero
 # on any mismatch -- the harness is a single pass/fail gate.
 
-import json
 import sys
 
 import numpy as np
@@ -25,66 +25,17 @@ import jax
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402  (must follow the x64 config)
 
+from ad_verify_common import (  # noqa: E402
+    tensor_np, scalar, Check, TIGHT, LOOSE,
+    make_scenario_registry, main_driver,
+)
 
 # --------------------------------------------------------------------------- #
-# golden.json decoding
+# JAX tensor decoder (wraps common numpy decoder with jnp.asarray)
 # --------------------------------------------------------------------------- #
 def tensor(obj):
     """Decode a {shape, complex, data} object into a jnp array (row-major)."""
-    data = np.asarray(obj["data"], dtype=np.float64)
-    if obj["complex"]:
-        data = data[0::2] + 1j * data[1::2]
-    return jnp.asarray(data.reshape(obj["shape"]))
-
-
-def scalar(obj):
-    """Decode a scalar: real -> float, complex -> {re, im} object."""
-    if isinstance(obj, dict):
-        return complex(obj["re"], obj["im"])
-    return float(obj)
-
-
-# --------------------------------------------------------------------------- #
-# Comparison
-# --------------------------------------------------------------------------- #
-# Tolerances (plan section 4.3). Most checks are exact up to roundoff; norm-type
-# and second-order (HVP) checks accumulate a little more float error.
-TIGHT = dict(rtol=1e-11, atol=1e-12)
-LOOSE = dict(rtol=1e-6, atol=1e-9)
-
-
-class Check:
-    """One labelled (computed vs golden) comparison within a scenario."""
-
-    def __init__(self, label, computed, golden, tol=TIGHT):
-        c = np.asarray(computed).ravel()
-        g = np.asarray(golden).ravel()
-        self.label = label
-        self.tol = tol
-        if c.shape != g.shape:
-            self.ok = False
-            self.max_abs = self.max_rel = float("inf")
-            self.note = f"shape {c.shape} vs {g.shape}"
-            return
-        diff = np.abs(c - g)
-        self.max_abs = float(diff.max()) if diff.size else 0.0
-        denom = np.abs(g)
-        self.max_rel = float((diff / np.maximum(denom, 1e-300)).max()) if g.size else 0.0
-        self.ok = bool(np.allclose(c, g, **tol))
-        self.note = ""
-
-    @classmethod
-    def assertion(cls, label, ok, max_abs, note=""):
-        """A bare pass/fail with a precomputed magnitude (e.g. a negative
-        control), bypassing the allclose comparison."""
-        self = cls.__new__(cls)
-        self.label = label
-        self.tol = {}
-        self.ok = bool(ok)
-        self.max_abs = float(max_abs)
-        self.max_rel = float("nan")
-        self.note = note
-        return self
+    return jnp.asarray(tensor_np(obj))
 
 
 # --------------------------------------------------------------------------- #
@@ -93,15 +44,7 @@ class Check:
 # Each takes the decoded scenario dict and returns a list of Check objects.
 # `inp`/`out`/`par` pull the named tensors/scalars/params.
 # --------------------------------------------------------------------------- #
-REGISTRY = {}
-
-
-def scenario(name):
-    def deco(fn):
-        REGISTRY[name] = fn
-        return fn
-
-    return deco
+REGISTRY, scenario = make_scenario_registry()
 
 
 def make_accessors(s):
@@ -182,8 +125,8 @@ def _jvp_checks(f, primals, tangents, out, want_tangent="tangent",
     primal_out, tangent_out = jax.jvp(f, primals, tangents)
     g_primal = out[primal_key]
     g_tangent = out[want_tangent]
-    gp = scalar(g_primal) if not isinstance(g_primal, dict) or "data" not in g_primal else tensor(g_primal)
-    gt = scalar(g_tangent) if not isinstance(g_tangent, dict) or "data" not in g_tangent else tensor(g_tangent)
+    gp = scalar(g_primal) if not (isinstance(g_primal, dict) and "data" in g_primal) else tensor(g_primal)
+    gt = scalar(g_tangent) if not (isinstance(g_tangent, dict) and "data" in g_tangent) else tensor(g_tangent)
     return [Check(primal_key, primal_out, gp, tol),
             Check(want_tangent, tangent_out, gt, tol)]
 
@@ -386,8 +329,6 @@ def _complex_vjp_checks(s, f):
     checks = [Check("Abar(+adapter)", jnp.conj(ja), tensor(out["Abar"])),
               Check("Bbar(+adapter)", jnp.conj(jb), tensor(out["Bbar"]))]
     # Negative control: without the conjugation adapter the seam must be visible.
-    # We assert the *raw* JAX cotangent does NOT match the tape -- this proves the
-    # adapter is load-bearing and the agreement above is not vacuously passing.
     raw_gap = float(np.abs(np.asarray(ja).ravel()
                            - np.asarray(tensor(out["Abar"])).ravel()).max())
     checks.append(Check.assertion("seam(no-adapter differs)", raw_gap > 1e-3,
@@ -406,12 +347,8 @@ def _(s):
 
 
 # ---- 5.6b the 1/2 z^2 convention litmus ----------------------------------- #
-# Krämer's litmus (plan / AUTODIFF_BACKGROUND.md section 6.3): grad of
-# f(z) = 1/2 z^2 at z = 1+i is 1-i under the "plus"/PyTorch convention TA adopts
-# (1+i under JAX's "minus" convention). Verified three ways: (a) the tape value
-# equals the documented constant 1-i; (b) the same adapter as the VJP seam
-# bridges JAX's minus-convention vjp to the tape; (c) the raw (un-adapted) JAX
-# cotangent equals 1+i and so must differ from the tape -- the negative control.
+# Krämer's litmus: grad of f(z) = 1/2 z^2 at z = 1+i is 1-i under the "plus"/
+# PyTorch convention TA adopts (1+i under JAX's "minus" convention).
 @scenario("complex_half_sq_litmus")
 def _(s):
     inp, out, _ = make_accessors(s)
@@ -446,53 +383,12 @@ def _(s):
 @scenario("sparse_contract_vjp")
 def _(s):
     inp, out, par = make_accessors(s)
-    # densified operands (zero blocks are zeros), factor defaults to 1.
     f = lambda A, B: jnp.einsum("ik,kj->ij", A, B)
     return _vjp_array(f, (inp["A"], inp["B"]), inp["Cbar"], out, ["Abar", "Bbar"])
 
 
 # --------------------------------------------------------------------------- #
-# Driver
+# Entry point
 # --------------------------------------------------------------------------- #
-def main():
-    path = sys.argv[1] if len(sys.argv) > 1 else "golden.json"
-    with open(path) as fh:
-        doc = json.load(fh)
-
-    scenarios = doc["scenarios"]
-    hdr = f"{'scenario':28s} {'check':22s} {'max|abs|':>11s} {'max|rel|':>11s}  result"
-    print(hdr)
-    print("-" * len(hdr))
-
-    all_ok = True
-    missing = []
-    for s in scenarios:
-        name = s["name"]
-        fn = REGISTRY.get(name)
-        if fn is None:
-            missing.append(name)
-            print(f"{name:28s} {'(no oracle)':22s} {'':>11s} {'':>11s}  SKIP")
-            all_ok = False
-            continue
-        try:
-            checks = fn(s)
-        except Exception as exc:  # pragma: no cover - surfaced as a failure
-            print(f"{name:28s} {'(exception)':22s} {'':>11s} {'':>11s}  FAIL  {exc}")
-            all_ok = False
-            continue
-        for c in checks:
-            status = "PASS" if c.ok else "FAIL"
-            note = f"  {c.note}" if c.note else ""
-            print(f"{name:28s} {c.label:22s} {c.max_abs:11.2e} {c.max_rel:11.2e}  "
-                  f"{status}{note}")
-            all_ok = all_ok and c.ok
-
-    print("-" * len(hdr))
-    if missing:
-        print(f"WARNING: {len(missing)} scenario(s) had no JAX oracle: {missing}")
-    print("ALL PASS" if all_ok else "FAILURES PRESENT")
-    return 0 if all_ok else 1
-
-
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main_driver(REGISTRY, "jax"))

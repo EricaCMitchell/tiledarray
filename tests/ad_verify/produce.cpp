@@ -16,14 +16,15 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  *  produce.cpp
- *  Producer for the JAX dual-verification harness (ad_jax_dual_verification_plan.md).
+ *  Producer for the AD dual-verification harness (tests/ad_verify/).
  *
  *  Runs the native C++ AD layer (`src/TiledArray/ad/`) on deterministic inputs
- *  and dumps inputs, parameters, and results to `golden.json`. A companion
- *  `verify.py` recomputes the references in JAX and asserts agreement. This file
- *  is the *subject under test*; JAX is the independent oracle. Built on demand
- *  (`ninja ad_jax_produce`), never with `all` -- so it is immune to the
- *  unrelated `arena_tensor_kernels` break that blocks the monolithic `ta_test`.
+ *  and dumps inputs, parameters, and results to `golden.json`. Companion
+ *  verifiers (`verify_jax.py`, `verify_torch.py`) recompute the references
+ *  independently and assert agreement. This file is the *subject under test*;
+ *  JAX and PyTorch are independent oracles. Built on demand (`ninja ad_produce`),
+ *  never with `all` -- so it is immune to the unrelated `arena_tensor_kernels`
+ *  break that blocks the monolithic `ta_test`.
  */
 
 #include <complex>
