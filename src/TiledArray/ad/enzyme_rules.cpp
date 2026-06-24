@@ -19,33 +19,31 @@
  *  Enzyme custom-derivative registration for TiledArray's AD primitives.
  */
 
-// This translation unit is the single place where TiledArray registers its B1
-// functional primitives (contract, add, scale, permute, mult, conj,
-// elementwise, reductions) as Enzyme custom derivative rules
-// (augmented-forward + reverse), so that host C++ differentiated by the Enzyme
-// plugin treats each TA primitive as atomic and never descends into the
-// MADNESS/BLAS/MPI layers Enzyme cannot trace.
+// The B5 custom-rule *bodies* live in enzyme_rules.h (a header, not this TU):
+// Enzyme reads its type metadata from the rule function bodies in whichever
+// module it transforms, so a declaration-only shim makes the plugin abort in
+// type analysis. Each TU that differentiates host C++ over the TA primitives
+// therefore compiles the rule bodies itself by including that header.
 //
-// It is compiled with the Enzyme Clang pass plugin
-// (-fpass-plugin=ClangEnzyme-<ver>.so); see cmake/modules/FindOrFetchEnzyme.cmake
-// and enzyme_dependency_plan.md for that wiring.
-//
-// STATUS: scaffold only. The derivative-rule math and the
-// __enzyme_register_gradient_* / __enzyme_register_fwddiff_* registrations are
-// delivered by the autodiff plan (tiledarray_autodiff_plan.md B5). This file
-// exists so the build, ABI, and toolchain plumbing can land and be tested
-// independently of that math.
+// This TU exists so the build/ABI/toolchain wiring (autodiff plan B5 / the
+// enzyme dependency plan) has a library source to compile under the Enzyme pass
+// plugin (-fpass-plugin=ClangEnzyme-<ver>.so; see FindOrFetchEnzyme.cmake). It
+// pulls the rule header in as a compile-under-plugin smoke test — the static
+// rules it instantiates here are internal and unused (no __enzyme_autodiff call
+// in this TU), but their compiling under the plugin guards the library build.
 
 #include <TiledArray/config.h>
 
 #ifdef TILEDARRAY_HAS_ENZYME
 
+#include <TiledArray/ad/enzyme_rules.h>
+
 namespace TiledArray::ad {
 
-// Anchor symbol: keeps this TU non-empty (and its object in the link) before
-// any registration globals are added. Extended/replaced when the B5 rules land.
-const char* enzyme_rules_scaffold() noexcept {
-  return "TiledArray Enzyme AD rules (scaffold)";
+/// Anchor symbol keeping this TU's object in the link; the differentiable rules
+/// themselves are header-provided (enzyme_rules.h).
+const char* enzyme_rules_anchor() noexcept {
+  return "TiledArray Enzyme AD rules";
 }
 
 }  // namespace TiledArray::ad

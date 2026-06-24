@@ -96,6 +96,17 @@ message(STATUS "Enzyme: using plugin target ${_ta_enzyme_plugin_target} (LLVM ${
 # Attach the Enzyme pass plugin to one target's compilation. Deliberately
 # per-target, never global: only differentiated TUs opt in (autodiff plan B5 —
 # MPI/MADNESS/BLAS translation units compile unchanged).
+#
+# Opt-level stance (enzyme_integration_suggestions.md P0.2): this attaches only
+# -fpass-plugin and inherits the target's optimization level. The plugin runs
+# *after* the regular optimizer, so a differentiated TU must be built at the same
+# -O the rules were validated at; the primal rule shims are marked `noinline`
+# (enzyme_rules.h, TA_AD_PRIMAL) so the inliner cannot erase, at -O2+, the call
+# site Enzyme matches against a registered rule. The integration is validated at
+# Release (-O2). If a differentiated TU hits an Enzyme type-analysis or
+# pre-optimization crash, the documented first workaround is to add
+# `-mllvm -enzyme-preopt=0` to its compile options; keep all differentiated TUs
+# on one optimization level.
 function(ta_enable_enzyme_on _target)
   target_compile_options(${_target} PRIVATE "-fpass-plugin=${TA_ENZYME_PLUGIN}")
 endfunction()
