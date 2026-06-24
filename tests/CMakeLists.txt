@@ -239,6 +239,58 @@ target_compile_definitions(ad_produce PRIVATE
     TILEDARRAY_NO_USER_ERROR_MESSAGES=1
     MADNESS_DISPLAY_EXCEPTION_BREAK_MESSAGE=0)
 
+# Phase-2 Enzyme end-to-end cross-check (autodiff plan B5). A standalone main
+# that differentiates a host "energy = chain of contractions" routine with the
+# Enzyme plugin over TA's registered custom rules and cross-checks the gradient
+# against the native tape (tape.h) and finite differences. This is the ONE TU
+# compiled with -fpass-plugin (it contains the __enzyme_autodiff call and the
+# per-TU registration globals from enzyme.h); tiledarray links in plugin-free.
+# Gated on TILEDARRAY_HAS_ENZYME and built on demand (`ninja ad_enzyme_energy`).
+if (TILEDARRAY_HAS_ENZYME)
+  add_ta_executable(ad_enzyme_energy "ad_enzyme/energy.cpp" "tiledarray")
+  target_include_directories(ad_enzyme_energy PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}
+      ${CMAKE_CURRENT_BINARY_DIR}
+      ${PROJECT_BINARY_DIR}/tests)
+  target_compile_definitions(ad_enzyme_energy PRIVATE
+      TILEDARRAY_NO_USER_ERROR_MESSAGES=1
+      MADNESS_DISPLAY_EXCEPTION_BREAK_MESSAGE=0)
+  # Apply the Enzyme pass plugin to this (and only this) test TU.
+  ta_enable_enzyme_on(ad_enzyme_energy)
+  add_dependencies(ad_enzyme_energy ${TA_ENZYME_PLUGIN_TARGET})
+
+  # Coverage check for the expanded rule set (P1.1/P1.2/P1.3): reverse + forward
+  # mode over the additional primitives, real, complex (1/2 z^2 litmus), and
+  # sparse, each cross-checked against the native tape + finite differences.
+  add_ta_executable(ad_enzyme_primitives "ad_enzyme/primitives.cpp" "tiledarray")
+  target_include_directories(ad_enzyme_primitives PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}
+      ${CMAKE_CURRENT_BINARY_DIR}
+      ${PROJECT_BINARY_DIR}/tests)
+  target_compile_definitions(ad_enzyme_primitives PRIVATE
+      TILEDARRAY_NO_USER_ERROR_MESSAGES=1
+      MADNESS_DISPLAY_EXCEPTION_BREAK_MESSAGE=0)
+  ta_enable_enzyme_on(ad_enzyme_primitives)
+  add_dependencies(ad_enzyme_primitives ${TA_ENZYME_PLUGIN_TARGET})
+
+  # Higher-order seam (P2.3): the supported Hessian-vector-product path —
+  # Enzyme owns the first-order gradient, the native Tape<Dual> supplies the
+  # curvature — cross-checked against finite differences of the gradient. (Naive
+  # __enzyme_fwddiff-over-__enzyme_autodiff nesting is NOT viable: it needs
+  # second-order custom rules and otherwise blows up the Enzyme compile; see the
+  # file header.)
+  add_ta_executable(ad_enzyme_hvp "ad_enzyme/hvp.cpp" "tiledarray")
+  target_include_directories(ad_enzyme_hvp PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}
+      ${CMAKE_CURRENT_BINARY_DIR}
+      ${PROJECT_BINARY_DIR}/tests)
+  target_compile_definitions(ad_enzyme_hvp PRIVATE
+      TILEDARRAY_NO_USER_ERROR_MESSAGES=1
+      MADNESS_DISPLAY_EXCEPTION_BREAK_MESSAGE=0)
+  ta_enable_enzyme_on(ad_enzyme_hvp)
+  add_dependencies(ad_enzyme_hvp ${TA_ENZYME_PLUGIN_TARGET})
+endif()
+
 if (NOT TARGET test-cases-tiledarray)
   add_custom_target_subproject(tiledarray test-cases)
 endif()
