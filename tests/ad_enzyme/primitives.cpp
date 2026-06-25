@@ -40,11 +40,10 @@ using ZArray = TA::TArrayZ;
 using SArray = TA::TSpArrayD;
 using cd = std::complex<double>;
 
-// Enzyme activity markers + intrinsics (declared extern in enzyme.h).
-int enzyme_dup;
-int enzyme_const;
-int enzyme_out;
-int enzyme_dupnoneed;  // P2.2
+// Enzyme activity markers + intrinsics (declared extern in enzyme.h); defined
+// once for this executable via the centralized macro (P3.3, includes
+// enzyme_dupnoneed used in section F).
+TA_AD_DEFINE_ENZYME_MARKERS;
 
 // --- baked spec-bearing rules this TU uses (P0.3) --------------------------
 // scale by 1.5 (real); contract i,k * k,j -> i,j (real, for the dupnoneed /

@@ -51,10 +51,9 @@ using namespace TiledArray;
 using RArray = TA::TArrayD;
 
 // Enzyme activity-marker globals (matched by name by the plugin) and the
-// autodiff intrinsic come from enzyme.h as `extern`; define the markers here.
-int enzyme_dup;
-int enzyme_const;
-int enzyme_out;
+// autodiff intrinsic come from enzyme.h as `extern`; define the markers here,
+// once for this executable, via the centralized macro (P3.3).
+TA_AD_DEFINE_ENZYME_MARKERS;
 
 namespace {
 

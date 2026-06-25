@@ -67,9 +67,8 @@ using namespace TiledArray;
 using RArray = TA::TArrayD;
 using DualR = ad::Dual<RArray>;
 
-int enzyme_dup;
-int enzyme_const;
-int enzyme_out;
+// Enzyme activity markers, defined once for this executable (P3.3).
+TA_AD_DEFINE_ENZYME_MARKERS;
 
 // Square contraction X·X -> C, with annotations baked into the symbol (P0.3).
 TA_AD_CONTRACT_RULE(RArray, sq_ik_kj_ij, "i,k", "k,j", "i,j");

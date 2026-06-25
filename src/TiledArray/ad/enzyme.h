@@ -88,7 +88,18 @@
 /// per-target and inherits the build type's `-O`; keep all differentiated TUs on
 /// one level.
 
+/// Reverse-mode driver. The Enzyme pass replaces this call in a differentiated
+/// TU; its return value is the by-value-active gradient (the `enzyme_out`
+/// form), which the all-out-param routines used here leave unread — they write
+/// every gradient through a caller-owned shadow instead, so the call is spelled
+/// as a statement and the `double` return is intentionally ignored. The
+/// declared `double` (rather than `void`) keeps the by-value-active form usable
+/// too; the signature is variadic, so neither caller pays for the mismatch.
 extern "C" double __enzyme_autodiff(void*, ...);
+/// Forward-mode (JVP) driver — `void` because forward mode writes the output
+/// tangent through a shadow and never returns a value (P1.2). Pairs with the
+/// 2-element `__enzyme_register_derivative_*` registration (no tape), not the
+/// reverse gradient triple.
 extern "C" void __enzyme_fwddiff(void*, ...);
 extern int enzyme_dup;
 extern int enzyme_const;
@@ -101,6 +112,19 @@ extern int enzyme_out;
 /// output that feeds a *linear* op saving no residual). It is an optimization,
 /// not a correctness knob: the gradient is identical to `enzyme_dup`.
 extern int enzyme_dupnoneed;
+
+/// Define the Enzyme activity-marker globals (P3.3). The plugin matches them
+/// *by name* while transforming a differentiated TU; the markers above are only
+/// `extern` declarations, so each differentiated *executable* must define the
+/// set exactly once. Invoke this once, at file/namespace scope, in one TU of
+/// the program — e.g. `TA_AD_DEFINE_ENZYME_MARKERS;` — instead of hand-listing
+/// the `int enzyme_*;` set, which is easy to under-specify (forgetting
+/// `enzyme_dupnoneed` is the common slip) and drifts as markers are added here.
+#define TA_AD_DEFINE_ENZYME_MARKERS \
+  int enzyme_dup;                   \
+  int enzyme_const;                 \
+  int enzyme_out;                   \
+  int enzyme_dupnoneed
 
 // ---------------------------------------------------------------------------
 // Differentiable-surface helpers (P2.4).
