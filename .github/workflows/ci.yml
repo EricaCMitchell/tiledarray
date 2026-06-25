@@ -1,6 +1,12 @@
 name: TiledArray CI
 
-on: [push]
+on:
+  push:
+  # Opt-in Enzyme-AD lane only (the default matrix below runs on every push):
+  workflow_dispatch:
+  schedule:
+    # Weekly, Monday 06:00 UTC — surfaces Enzyme plugin/LLVM ABI drift.
+    - cron: '0 6 * * 1'
 
 env:
   CMAKE_BUILD_PARALLEL_LEVEL : 2
@@ -8,6 +14,9 @@ env:
 jobs:
 
   MacOS-Build:
+    # Default per-push matrix. Skipped on the weekly cron, which runs only the
+    # opt-in Enzyme-AD lane below.
+    if: github.event_name != 'schedule'
 
     strategy:
       fail-fast: false
@@ -98,3 +107,72 @@ jobs:
       run: |
         source ${{github.workspace}}/ci/openmpi.env
         cmake --build . --target check-tiledarray
+
+  # Opt-in Enzyme autodiff lane (enzyme_integration_suggestions.md P3.2). CI has
+  # no Enzyme cell in the default matrix — Enzyme is a Clang/LLVM compiler plugin
+  # built from source, which is heavy and ABI-pinned to LLVM. This job builds with
+  # -DTA_ENABLE_ENZYME=ON against a pinned LLVM/Clang and runs the end-to-end
+  # gradient cross-check (ad_enzyme_energy) at np=1 and np=2, so that plugin/LLVM
+  # ABI drift is caught when TA_TRACKED_ENZYME_TAG (or the toolchain) is bumped.
+  # Triggered manually (Actions → "Run workflow") or on the weekly schedule, never
+  # on every push.
+  Enzyme-AD:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    name: "Enzyme AD: clang++-${{ matrix.llvm }} Release"
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # LLVM major that ships in ubuntu-24.04 apt; must match the Enzyme tag in
+        # external/versions.cmake (see the support matrix in INSTALL.md).
+        llvm: [ 18 ]
+    env:
+      CXX: clang++-${{ matrix.llvm }}
+      CC: clang-${{ matrix.llvm }}
+      OMPI_MCA_btl_vader_single_copy_mechanism: none
+      OMPI_ALLOW_RUN_AS_ROOT: 1
+      OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: 1
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Host system info
+      shell: bash
+      run: cmake -P ${{github.workspace}}/ci/host_system_info.cmake
+
+    - name: Install prerequisites (LLVM/Clang + AD build deps)
+      run: |
+        wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | gpg --dearmor - | sudo tee /etc/apt/trusted.gpg.d/kitware.gpg >/dev/null
+        sudo apt-add-repository "deb https://apt.kitware.com/ubuntu/ $(lsb_release -cs) main"
+        sudo apt-get update
+        sudo apt-get -y install ninja-build cmake \
+          clang-${{ matrix.llvm }} llvm-${{ matrix.llvm }}-dev libclang-${{ matrix.llvm }}-dev libzstd-dev \
+          liblapack-dev libboost-dev libboost-serialization-dev libboost-random-dev \
+          libeigen3-dev openmpi-bin libopenmpi-dev flex bison
+
+    - name: "Configure: -DTA_ENABLE_ENZYME=ON"
+      shell: bash
+      run: |
+        set -x
+        cmake -B ${{github.workspace}}/build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_CXX_COMPILER=clang++-${{ matrix.llvm }} \
+          -DCMAKE_C_COMPILER=clang-${{ matrix.llvm }} \
+          -DLLVM_DIR=/usr/lib/llvm-${{ matrix.llvm }}/lib/cmake/llvm \
+          -DTA_ASSERT_POLICY=TA_ASSERT_THROW \
+          -DTA_ENABLE_ENZYME=ON \
+          -DMPIEXEC_PREFLAGS='--bind-to;none;--allow-run-as-root' \
+          || (cat ${{github.workspace}}/build/CMakeFiles/CMakeConfigureLog.yaml; false)
+
+    - name: Build ad_enzyme_energy
+      working-directory: ${{github.workspace}}/build
+      shell: bash
+      run: cmake --build . --target ad_enzyme_energy
+
+    - name: Run gradient cross-check (np=1 and np=2)
+      working-directory: ${{github.workspace}}/build
+      shell: bash
+      run: |
+        source ${{github.workspace}}/ci/openmpi.env || true
+        ./tests/ad_enzyme_energy
+        mpiexec -np 2 --bind-to none --allow-run-as-root ./tests/ad_enzyme_energy
