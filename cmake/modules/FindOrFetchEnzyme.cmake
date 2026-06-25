@@ -93,6 +93,69 @@ set(TA_ENZYME_PLUGIN_TARGET "${_ta_enzyme_plugin_target}"
 set(TILEDARRAY_HAS_ENZYME 1)
 message(STATUS "Enzyme: using plugin target ${_ta_enzyme_plugin_target} (LLVM ${LLVM_VERSION})")
 
+# --- (4) configure-time plugin smoke compile (enzyme_integration_suggestions.md P3.1)
+# A mismatched clang / LLVM / Enzyme-plugin ABI otherwise fails *deep* in the
+# build with a cryptic symptom (the plugin fails to load, the transformation
+# silently does not run, or `__enzyme_autodiff` stays an undefined symbol — the
+# FAQ's top three failure modes). Compile a tiny `__enzyme_autodiff` of x*x under
+# the *actual* plugin now, so a broken toolchain fails fast with a clear message.
+# Compile-and-link is the whole test: if the Enzyme pass does not run, the
+# `__enzyme_autodiff` call is never lowered and the link fails on the undefined
+# symbol; if it runs, the call is replaced and the probe links.
+#
+# This needs the plugin .so to exist on disk at configure time. That holds for an
+# installed Enzyme (an IMPORTED target) and for a *warm* reconfigure of a
+# FetchContent build, but NOT for a *cold* FetchContent build — there the .so is
+# produced during the build step, after configure. In that one case the smoke is
+# deferred with a note and reattempted on the next configure; either way the
+# ad_enzyme_* test TUs exercise the plugin at build time.
+set(_ta_enzyme_plugin_file "")
+get_target_property(_ta_enzyme_imported ${_ta_enzyme_plugin_target} IMPORTED)
+if (_ta_enzyme_imported)
+  foreach (_cfg "" _RELEASE _RELWITHDEBINFO _DEBUG _MINSIZEREL)
+    get_target_property(_loc ${_ta_enzyme_plugin_target} IMPORTED_LOCATION${_cfg})
+    if (_loc AND EXISTS "${_loc}")
+      set(_ta_enzyme_plugin_file "${_loc}")
+      break()
+    endif()
+  endforeach()
+elseif (DEFINED enzyme_BINARY_DIR)
+  # FetchContent layout: <bindir>/Enzyme/ClangEnzyme-<major>.so (present once built).
+  set(_loc "${enzyme_BINARY_DIR}/Enzyme/${_ta_enzyme_plugin_target}.so")
+  if (EXISTS "${_loc}")
+    set(_ta_enzyme_plugin_file "${_loc}")
+  endif()
+endif()
+
+if (_ta_enzyme_plugin_file)
+  include(CheckCXXSourceCompiles)
+  set(_ta_enzyme_saved_required_flags "${CMAKE_REQUIRED_FLAGS}")
+  string(APPEND CMAKE_REQUIRED_FLAGS " -fpass-plugin=${_ta_enzyme_plugin_file}")
+  check_cxx_source_compiles("
+    extern \"C\" double __enzyme_autodiff(void *, ...);
+    static double ta_enzyme_smoke_sq(double x) { return x * x; }
+    int main() {
+      return __enzyme_autodiff((void *)ta_enzyme_smoke_sq, 3.0) > 5.0 ? 0 : 1;
+    }
+  " TA_ENZYME_PLUGIN_SMOKE_OK)
+  set(CMAKE_REQUIRED_FLAGS "${_ta_enzyme_saved_required_flags}")
+  if (NOT TA_ENZYME_PLUGIN_SMOKE_OK)
+    message(FATAL_ERROR
+        "TA_ENABLE_ENZYME=ON: the Enzyme plugin smoke compile failed — the plugin "
+        "(${_ta_enzyme_plugin_file}) did not transform a trivial __enzyme_autodiff "
+        "of x*x with ${CMAKE_CXX_COMPILER} (${CMAKE_CXX_COMPILER_VERSION}). This is "
+        "almost always a clang / LLVM / Enzyme-plugin version mismatch: confirm clang, "
+        "LLVM ${LLVM_VERSION}, and the Enzyme tag ${TA_TRACKED_ENZYME_TAG} agree. See "
+        "the configure log (CMakeError.log / CMakeConfigureLog.yaml) for the compiler "
+        "output.")
+  endif()
+  message(STATUS "Enzyme: plugin smoke compile (x*x) passed")
+else()
+  message(STATUS "Enzyme: plugin is built from source and not yet on disk; deferring "
+                 "the configure-time smoke compile (reattempted on the next configure). "
+                 "The ad_enzyme_* test TUs exercise the plugin at build time.")
+endif()
+
 # Attach the Enzyme pass plugin to one target's compilation. Deliberately
 # per-target, never global: only differentiated TUs opt in (autodiff plan B5 —
 # MPI/MADNESS/BLAS translation units compile unchanged).

@@ -96,6 +96,16 @@ Optional prerequisites:
       cmake ... -DTA_ENABLE_ENZYME=ON -DCMAKE_CXX_COMPILER=clang++ -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
       ```
     - Only the AD registration translation unit is compiled with the Enzyme plugin; the rest of TiledArray (and MPI/MADNESS/BLAS) builds unchanged. CI does **not** exercise this path, so validate it locally.
+    - **Support matrix.** Enzyme's plugin ABI tracks LLVM head, so the three versions must agree. The constraint is enforced at configure time (`FindOrFetchEnzyme.cmake`): the `clang++` *major* version must equal the LLVM *major* version the plugin is built against, LLVM must be >= 15, and the Enzyme tag must support that LLVM. A configure-time smoke compile of a trivial `__enzyme_autodiff` under the plugin then fails fast on any residual mismatch.
+
+      | Component | Requirement | Pinned / found |
+      |---|---|---|
+      | `clang++` (differentiated TUs) | major version `== LLVM_VERSION_MAJOR` | `CMAKE_CXX_COMPILER` |
+      | LLVM | `>= 15`; provides the plugin's host ABI | `LLVM_DIR` (found via `find_package(LLVM)`) |
+      | Clang dev libs | `ClangConfig.cmake` present (Enzyme builds its plugin only when found) | `Clang_DIR` (auto-derived from `LLVM_DIR`, or set explicitly) |
+      | Enzyme | tag compatible with the LLVM major above | `TA_TRACKED_ENZYME_TAG` in `external/versions.cmake` (currently `v0.0.267`, validated against LLVM 21) |
+
+      Known-good local combinations: LLVM/Clang 18, 20, or 21 with Enzyme `v0.0.267`. Bumping `TA_TRACKED_ENZYME_TAG` is an LLVM-coordinated event — name the matching LLVM version in the change and re-run a local `-DTA_ENABLE_ENZYME=ON` build, since CI does not gate it.
 
 Many of these dependencies can be installed with a package manager,
 such as Homebrew on OS X or apt-get on Debian Linux distributions;
