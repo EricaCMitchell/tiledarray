@@ -102,6 +102,7 @@ set(ta_test_src_files  ta_test.cpp
     ad_reverse.cpp
     ad_hvp.cpp
     ad_sparse.cpp
+    ad_eig.cpp
     linalg.cpp
     cp.cpp
     btas.cpp
@@ -210,6 +211,7 @@ set(ad_test_src_files
     ad_reverse.cpp
     ad_hvp.cpp
     ad_sparse.cpp
+    ad_eig.cpp
 )
 add_ta_executable(ad_test "${ad_test_src_files}" "tiledarray")
 if (Boost_IS_MODULARIZED)
