@@ -189,11 +189,23 @@ set(TILEDARRAY_ENABLE_GLOBAL_COMM_STATS_TRACE ${TA_TRACE_GLOBAL_COMM_STATS})
 option(TA_TTG "Enable search/build of TTG library" OFF)
 add_feature_info(TA_TTG TA_TTG "TTG library")
 
-# Automatic differentiation: native C++ AD layer (src/TiledArray/ad/);
-# no external dependency, no special toolchain.
-# See tiledarray_autodiff_plan.md (B4).
+# Automatic differentiation. Two layered toggles:
+#  - TA_ENABLE_AD     builds the native C++ AD layer (src/TiledArray/ad/);
+#                     no external dependency, no special toolchain.
+#  - TA_ENABLE_ENZYME registers Enzyme (LLVM-level) custom rules so unmodified
+#                     host C++ that calls TA primitives can be differentiated
+#                     end-to-end. It is LLVM/Clang-version-locked and pulls in
+#                     Enzyme as a dependency, so it implies TA_ENABLE_AD.
+# See tiledarray_autodiff_plan.md (B4/B5) and enzyme_dependency_plan.md.
 option(TA_ENABLE_AD "Enable TiledArray's native C++ automatic-differentiation layer" OFF)
+option(TA_ENABLE_ENZYME "Enable Enzyme (LLVM-level) automatic differentiation of host C++ that uses TiledArray (implies TA_ENABLE_AD)" OFF)
+if (TA_ENABLE_ENZYME AND NOT TA_ENABLE_AD)
+  message(STATUS "TA_ENABLE_ENZYME=ON requires the native AD layer; enabling TA_ENABLE_AD")
+  set(TA_ENABLE_AD ON CACHE BOOL "Enable TiledArray's native C++ automatic-differentiation layer" FORCE)
+endif()
 add_feature_info(AD TA_ENABLE_AD "Native C++ automatic-differentiation layer (forward/reverse over TiledArray primitives)")
+add_feature_info(Enzyme TA_ENABLE_ENZYME "LLVM-level automatic differentiation via Enzyme custom rules")
+set(TILEDARRAY_HAS_ENZYME ${TA_ENABLE_ENZYME})
 
 option(IntelMKL_FAIR_DISPATCH "Enable fair dispatch in Intel MKL" OFF)
 add_feature_info(IntelMKL_FAIR_DISPATCH IntelMKL_FAIR_DISPATCH "Use of fair dispatch in Intel MKL")

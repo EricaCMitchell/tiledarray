@@ -103,6 +103,9 @@
 /* Is TTG available? */
 #cmakedefine TILEDARRAY_HAS_TTG 1
 
+/* Is Enzyme (LLVM-level) automatic differentiation available? */
+#cmakedefine TILEDARRAY_HAS_ENZYME 1
+
 /* Use preprocessor to check if BTAS is available */
 #ifndef TILEDARRAY_HAS_BTAS
 #ifdef __has_include
