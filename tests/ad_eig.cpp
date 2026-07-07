@@ -321,4 +321,166 @@ BOOST_AUTO_TEST_CASE(forward_constant_input) {
   BOOST_CHECK(r.min_gap > 0);
 }
 
+BOOST_AUTO_TEST_CASE(reverse_fd_real) {
+  // tape gradient of g(A) = ⟨B, U W Uᵀ⟩ + Σ_i w'_i λ_i vs central FD along
+  // random Hermitian directions
+  RArray A = rand_hermitian<RArray>(trSq);
+  RArray B = rand_hermitian<RArray>(trSq);
+  RArray wp = rand_array<RArray>(trV);
+  RArray Wd(*GlobalFixture::world, trSq);
+  Wd.init_elements([](const auto& idx) {
+    return idx[0] == idx[1] ? 1.0 + 0.5 * idx[0] : 0.0;
+  });
+
+  ad::Tape<RArray> tape;
+  auto va = ad::make_leaf(tape, A);
+  auto r = ad::heig(va);
+  auto vB = ad::make_leaf(tape, B, false);
+  auto vW = ad::make_leaf(tape, Wd, false);
+  auto vwp = ad::make_leaf(tape, wp, false);
+  auto t1 = ad::contract(r.evecs, vW, "i,k", "k,l", "i,l");
+  auto t2 = ad::contract(t1, r.evecs, "i,l", "j,l", "i,j");
+  auto s1 = ad::dot(vB, t2);
+  auto s2 = ad::dot(vwp, r.evals);
+  BOOST_CHECK_CLOSE(s1.value + s2.value,
+                    evec_functional(A, B, Wd) + weighted_evals(A, wp), 1e-9);
+  tape.accumulate_scalar(s2.id, 1.0);  // seed the second output term
+  tape.backward(s1.id, 1.0);
+  const RArray& Abar = tape.adjoint(va.id).value();
+
+  const double h = 1e-5;
+  for (int k = 0; k < 3; ++k) {
+    RArray dA = rand_hermitian<RArray>(trSq);
+    RArray Ap = ad::add(A, ad::scale(dA, h)), Am = ad::subt(A, ad::scale(dA, h));
+    const double fd = (evec_functional(Ap, B, Wd) + weighted_evals(Ap, wp) -
+                       evec_functional(Am, B, Wd) - weighted_evals(Am, wp)) /
+                      (2 * h);
+    BOOST_CHECK_CLOSE(ad::dot(Abar, dA), fd, 1e-2);  // percent → rel 1e-4
+  }
+}
+
+BOOST_AUTO_TEST_CASE(reverse_adjoint_consistency_complex) {
+  // adjoint consistency through the Var layer against the Dual JVP —
+  // catches missing conjugates in the recorded VJP
+  CArray A = rand_hermitian<CArray>(trSq);
+  CArray dA = rand_hermitian<CArray>(trSq);
+  CArray lbar = rand_array<CArray>(trV);
+  CArray ubar = rand_array<CArray>(trSq);
+
+  ad::Tape<CArray> tape;
+  auto va = ad::make_leaf(tape, A);
+  auto r = ad::heig(va);
+  tape.accumulate_array(r.evecs.id, ubar);  // seed Ū, then λ̄ via backward
+  tape.backward(r.evals.id, lbar);
+  const CArray& Abar = tape.adjoint(va.id).value();
+
+  auto rd = ad::heig(ad::make_dual(A, dA));
+  const double lhs = std::real(ad::inner_product(lbar, *rd.evals.tangent)) +
+                     std::real(ad::inner_product(ubar, *rd.evecs.tangent));
+  const double rhs = std::real(ad::inner_product(Abar, dA));
+  BOOST_CHECK_SMALL(lhs - rhs, 1e-9);
+}
+
+BOOST_AUTO_TEST_CASE(reverse_hellmann_feynman_degenerate) {
+  // f = Σ_i λ_i = tr A on an EXACTLY degenerate A: the gradient is the
+  // identity (analytic) and the DEFAULT error policy must NOT throw — only
+  // the eigenvalue cotangent is nonzero, so F is never built (lazy path)
+  RArray D(*GlobalFixture::world, trSq);
+  const double dvals[4] = {1.0, 1.0, 2.0, 3.0};
+  D.init_elements([&dvals](const auto& idx) {
+    return idx[0] == idx[1] ? dvals[idx[0]] : 0.0;
+  });
+  RArray w1(*GlobalFixture::world, trV);
+  w1.init_elements([](const auto&) { return 1.0; });
+
+  ad::Tape<RArray> tape;
+  auto va = ad::make_leaf(tape, D);
+  auto r = ad::heig(va);
+  auto vw = ad::make_leaf(tape, w1, false);
+  auto s = ad::dot(vw, r.evals);
+  BOOST_CHECK_CLOSE(s.value, 7.0, 1e-8);  // tr D
+  BOOST_CHECK_NO_THROW(tape.backward(s.id, 1.0));
+  BOOST_CHECK_SMALL(
+      fro_diff(tape.adjoint(va.id).value(), ad::detail::identity_like(D)),
+      1e-10);
+}
+
+BOOST_AUTO_TEST_CASE(reverse_degenerate_error_and_broaden) {
+  // exactly degenerate A with a nontrivial eigenbasis: A = Q diag(1,1,2,3) Qᵀ
+  RArray Arand = rand_hermitian<RArray>(trSq);
+  auto q = ad::heig(Arand);
+  RArray Lam(*GlobalFixture::world, trSq);
+  const double dvals[4] = {1.0, 1.0, 2.0, 3.0};
+  Lam.init_elements([&dvals](const auto& idx) {
+    return idx[0] == idx[1] ? dvals[idx[0]] : 0.0;
+  });
+  RArray Adeg;
+  Adeg("i,j") = q.evecs("i,k") * Lam("k,l") * q.evecs("j,l");
+
+  RArray B = rand_hermitian<RArray>(trSq);
+  // weights EQUAL on the degenerate pair (ascending → columns 0, 1), so the
+  // functional is invariant under rotations inside the degenerate subspace
+  RArray Wd(*GlobalFixture::world, trSq);
+  const double wvals[4] = {2.0, 2.0, -1.0, 3.0};
+  Wd.init_elements([&wvals](const auto& idx) {
+    return idx[0] == idx[1] ? wvals[idx[0]] : 0.0;
+  });
+
+  auto grad = [&](const ad::HeigDiffPolicy& pol) {
+    ad::Tape<RArray> tape;
+    auto va = ad::make_leaf(tape, Adeg);
+    auto r = ad::heig(va, pol);
+    auto vB = ad::make_leaf(tape, B, false);
+    auto vW = ad::make_leaf(tape, Wd, false);
+    auto t1 = ad::contract(r.evecs, vW, "i,k", "k,l", "i,l");
+    auto t2 = ad::contract(t1, r.evecs, "i,l", "j,l", "i,j");
+    auto s = ad::dot(vB, t2);
+    tape.backward(s.id, 1.0);  // error policy throws here (lazy F)
+    return RArray(tape.adjoint(va.id).value());
+  };
+
+  // evec cotangent flows → the error policy throws at backward()
+  BOOST_CHECK_THROW(grad(ad::HeigDiffPolicy{}), TiledArray::Exception);
+
+  // broaden: finite gradient matching FD (the functional is smooth at the
+  // degeneracy thanks to the equal weights)
+  ad::HeigDiffPolicy br{ad::HeigDiffPolicy::Degeneracy::broaden};
+  RArray Abar = grad(br);
+  const double h = 1e-4;
+  for (int k = 0; k < 3; ++k) {
+    RArray dA = rand_hermitian<RArray>(trSq);
+    const double fd =
+        (evec_functional(ad::add(Adeg, ad::scale(dA, h)), B, Wd) -
+         evec_functional(ad::subt(Adeg, ad::scale(dA, h)), B, Wd)) /
+        (2 * h);
+    BOOST_CHECK_CLOSE(ad::dot(Abar, dA), fd, 0.1);  // percent → rel 1e-3
+  }
+}
+
+BOOST_AUTO_TEST_CASE(reverse_activity) {
+  RArray A = rand_hermitian<RArray>(trSq);
+  RArray w = rand_array<RArray>(trV);
+
+  // inactive leaf → both outputs inactive, nothing recorded
+  {
+    ad::Tape<RArray> tape;
+    auto va = ad::make_leaf(tape, A, false);
+    auto r = ad::heig(va);
+    BOOST_CHECK(!r.evals.active);
+    BOOST_CHECK(!r.evecs.active);
+  }
+
+  // unconnected evecs output → its adjoint stays the symbolic zero
+  {
+    ad::Tape<RArray> tape;
+    auto va = ad::make_leaf(tape, A);
+    auto r = ad::heig(va);
+    auto vw = ad::make_leaf(tape, w, false);
+    auto s = ad::dot(vw, r.evals);
+    tape.backward(s.id, 1.0);
+    BOOST_CHECK(tape.adjoint(r.evecs.id).is_zero());
+    BOOST_CHECK(!tape.adjoint(va.id).is_zero());
+  }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

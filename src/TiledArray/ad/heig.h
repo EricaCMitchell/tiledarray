@@ -330,6 +330,53 @@ HeigResult<Dual<Array>> heig(const Dual<Array>& a,
           make_dual(std::move(p.evecs), std::move(dU)), p.min_gap};
 }
 
+/// Result of reverse-mode `heig`: both outputs as tape variables.
+template <typename T>
+struct HeigVars {
+  Var<T> evals;    ///< rank-1 eigenvalues variable
+  Var<T> evecs;    ///< rank-2 eigenvector-columns variable
+  double min_gap;  ///< spectrum's minimum relative gap (diagnostic)
+};
+
+/// Reverse-mode (VJP) rule for `heig`.
+///
+/// Records one node adjoining *both* outputs into `Ā` via `heig_vjp`. The
+/// cotangents are read lazily at `backward()`: if only the eigenvalue
+/// cotangent is nonzero the Hellmann–Feynman path runs and F is never built,
+/// so the degeneracy policy cannot fire (see the file header). The saved
+/// residuals `λ`, `U` alias the returned outputs and are freeze-guarded like
+/// `contract`'s operands.
+///
+/// \tparam T `Array`, or `Dual<Array>` for forward-over-reverse (HVP)
+template <typename T>
+HeigVars<T> heig(const Var<T>& a, const HeigDiffPolicy& policy = {},
+                 TiledRange evec_trange = TiledRange()) {
+  auto p = ad::heig(a.value, policy, std::move(evec_trange));
+  Tape<T>* tape = a.tape;
+  if (!a.active)
+    return {Var<T>{tape, 0, std::move(p.evals), false},
+            Var<T>{tape, 0, std::move(p.evecs), false}, p.min_gap};
+  const std::size_t l_id = tape->make_variable();
+  const std::size_t u_id = tape->make_variable();
+  const std::size_t a_id = a.id;
+  tape->register_guard(p.evals);  // saved residuals alias the returned outputs
+  tape->register_guard(p.evecs);
+  T lam = p.evals, U = p.evecs;
+  const double min_gap = p.min_gap;
+  tape->push_node([=]() {
+    auto& lbar = tape->adjoint(l_id);
+    auto& ubar = tape->adjoint(u_id);
+    if (lbar.is_zero() && ubar.is_zero()) return;
+    tape->accumulate_array(
+        a_id,
+        detail::heig_vjp(lam, U, lbar.is_zero() ? nullptr : &lbar.value(),
+                         ubar.is_zero() ? nullptr : &ubar.value(), policy,
+                         min_gap));
+  });
+  return {Var<T>{tape, l_id, std::move(p.evals), true},
+          Var<T>{tape, u_id, std::move(p.evecs), true}, p.min_gap};
+}
+
 }  // namespace TiledArray::ad
 
 #endif  // TILEDARRAY_AD_HEIG_H__INCLUDED
