@@ -483,4 +483,41 @@ BOOST_AUTO_TEST_CASE(reverse_activity) {
   }
 }
 
+BOOST_AUTO_TEST_CASE(hvp_through_heig) {
+  // forward-over-reverse through heig: f(A) = Σ_i w_i λ_i (λ̄ = w seeds the
+  // eigenvalue output), HVP H·V via Tape<Dual> vs central FD of the
+  // first-order tape gradient. Exercises dF and the second-order eig terms —
+  // the payoff of writing the kernels in B1 primitives (no new rule code).
+  using DualR = ad::Dual<RArray>;
+  RArray A = rand_hermitian<RArray>(trSq);
+  RArray V = rand_hermitian<RArray>(trSq);
+  RArray w = rand_array<RArray>(trV);
+
+  auto grad_f = [&](const RArray& X) {
+    ad::Tape<RArray> tape;
+    auto vx = ad::make_leaf(tape, X);
+    auto r = ad::heig(vx);
+    tape.backward(r.evals.id, w);
+    return RArray(tape.adjoint(vx.id).value());
+  };
+
+  ad::Tape<DualR> tape;
+  auto va = ad::make_leaf(tape, ad::make_dual(A, V));
+  auto r = ad::heig(va);
+  tape.backward(r.evals.id, ad::make_constant(w));  // λ̄ = w (constant seed)
+  const DualR& g = tape.adjoint(va.id).value();
+  BOOST_REQUIRE(g.has_tangent());
+
+  // primal of the dual gradient == the plain reverse-mode gradient
+  BOOST_CHECK_SMALL(fro_diff(g.primal, grad_f(A)), 1e-11);
+
+  // tangent == H·V vs FD of the gradient along V
+  const double h = 1e-4;
+  RArray gp = grad_f(ad::add(A, ad::scale(V, h)));
+  RArray gm = grad_f(ad::subt(A, ad::scale(V, h)));
+  RArray fd = ad::scale(ad::subt(gp, gm), 1.0 / (2 * h));
+  BOOST_CHECK_SMALL(fro_diff(*g.tangent, fd),
+                    1e-3 * std::sqrt(ad::squared_norm(fd)));
+}
+
 BOOST_AUTO_TEST_SUITE_END()
