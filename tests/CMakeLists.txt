@@ -289,6 +289,22 @@ if (TILEDARRAY_HAS_ENZYME)
       MADNESS_DISPLAY_EXCEPTION_BREAK_MESSAGE=0)
   ta_enable_enzyme_on(ad_enzyme_hvp)
   add_dependencies(ad_enzyme_hvp ${TA_ENZYME_PLUGIN_TARGET})
+
+  # Phase-4 heig rule cross-check: E(A) = Σ w_i λ_i + <B, U W Uᵀ> written as a
+  # chain of registered shims (heig/contract/dot), differentiated with the
+  # Enzyme plugin, gradient cross-checked against the native tape and finite
+  # differences; includes the degenerate eigenvalue-only (Hellmann–Feynman)
+  # path and the forward (JVP) registration.
+  add_ta_executable(ad_enzyme_eig "ad_enzyme/eig.cpp" "tiledarray")
+  target_include_directories(ad_enzyme_eig PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}
+      ${CMAKE_CURRENT_BINARY_DIR}
+      ${PROJECT_BINARY_DIR}/tests)
+  target_compile_definitions(ad_enzyme_eig PRIVATE
+      TILEDARRAY_NO_USER_ERROR_MESSAGES=1
+      MADNESS_DISPLAY_EXCEPTION_BREAK_MESSAGE=0)
+  ta_enable_enzyme_on(ad_enzyme_eig)
+  add_dependencies(ad_enzyme_eig ${TA_ENZYME_PLUGIN_TARGET})
 endif()
 
 if (NOT TARGET test-cases-tiledarray)

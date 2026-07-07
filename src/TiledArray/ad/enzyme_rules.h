@@ -35,6 +35,7 @@
 // the expression DSL (TsrExpr), whose full definitions live behind tiledarray.h.
 #include <tiledarray.h>
 
+#include <TiledArray/ad/heig.h>
 #include <TiledArray/ad/ops.h>
 
 /// \file enzyme_rules.h
@@ -609,6 +610,68 @@ void inner_fwd(const A* a, const A* da, const A* b, const A* db,
   *dout = t1 + t2;
 }
 
+// ---- heig: A = U Λ Uᴴ (atomic primitive; policy baked into the symbol) ----
+// Two array outputs (evals, evecs); the reverse consumes their shadows as λ̄ /
+// Ū and accumulates the Hermitian-projected Ā. The residual carries the
+// primal outputs + min_gap across the aug→rev pair. F is built only when the
+// eigenvector cotangent is nonzero (heig_vjp's lazy path), so an
+// eigenvalue-only energy (Hellmann–Feynman) never trips the degeneracy
+// policy — mirroring the native tape rule in heig.h.
+
+/// Residual saved by heig's augmented forward: both primal outputs (shallow
+/// handles) plus the degeneracy diagnostic.
+template <typename A>
+struct HeigResidual {
+  A evals, evecs;
+  double min_gap;
+};
+
+template <typename A>
+void heig_primal(const A* a, A* evals, A* evecs,
+                 const TiledArray::ad::HeigDiffPolicy& policy) {
+  auto r = TiledArray::ad::heig(*a, policy);
+  *evals = std::move(r.evals);
+  *evecs = std::move(r.evecs);
+}
+template <typename A>
+void* heig_aug(const A* a, A* evals, A* evecs,
+               const TiledArray::ad::HeigDiffPolicy& policy) {
+  auto r = TiledArray::ad::heig(*a, policy);
+  auto* t = new HeigResidual<A>{r.evals, r.evecs, r.min_gap};
+  *evals = std::move(r.evals);
+  *evecs = std::move(r.evecs);
+  return t;
+}
+template <typename A>
+void heig_rev(A* da, const A* devals, const A* devecs,
+              const TiledArray::ad::HeigDiffPolicy& policy, void* tape) {
+  auto* t = static_cast<HeigResidual<A>*>(tape);
+  // uninitialized shadow == symbolic-zero cotangent (B2)
+  const A* lbar = devals->is_initialized() ? devals : nullptr;
+  const A* ubar = devecs->is_initialized() ? devecs : nullptr;
+  if (lbar || ubar)
+    accumulate_into(da, TiledArray::ad::detail::heig_vjp(
+                            t->evals, t->evecs, lbar, ubar, policy,
+                            t->min_gap));
+  delete t;  // eager residual free as consumed (P2.1)
+}
+template <typename A>
+void heig_fwd(const A* a, const A* da, A* evals, A* devals, A* evecs,
+              A* devecs, const TiledArray::ad::HeigDiffPolicy& policy) {
+  auto r = TiledArray::ad::heig(*a, policy);
+  if (da->is_initialized()) {
+    auto [dl, du] = TiledArray::ad::detail::heig_jvp(r.evals, r.evecs, *da,
+                                                     policy, r.min_gap);
+    *devals = std::move(dl);
+    *devecs = std::move(du);
+  } else {
+    *devals = A();  // symbolic-zero tangents
+    *devecs = A();
+  }
+  *evals = std::move(r.evals);
+  *evecs = std::move(r.evecs);
+}
+
 }  // namespace TiledArray::ad::edetail
 
 // The shims and rules carry internal linkage but C-style flat names; the
@@ -736,6 +799,36 @@ void inner_fwd(const A* a, const A* da, const A* b, const A* db,
                           ta_ad_ew_##SUFFIX##_aug, ta_ad_ew_##SUFFIX##_rev); \
   TA_AD_REGISTER_DERIVATIVE(ta_ad_ew_##SUFFIX, ta_ad_ew_##SUFFIX,           \
                             ta_ad_ew_##SUFFIX##_fwd)
+
+// heig with the degeneracy POLICY baked into the symbol (a policy pointer arg
+// would itself demand a shadow slot). Two outputs => a shadow slot per output
+// in the aug/rev/fwd signatures, like every other pointer arg.
+#define TA_AD_HEIG_RULE(ARRAY, SUFFIX, POLICY)                               \
+  static TA_AD_PRIMAL void ta_ad_heig_##SUFFIX(const ARRAY* a, ARRAY* evals, \
+                                               ARRAY* evecs) {               \
+    TiledArray::ad::edetail::heig_primal(a, evals, evecs, POLICY);           \
+  }                                                                          \
+  static TA_AD_RULE void* ta_ad_heig_##SUFFIX##_aug(                         \
+      const ARRAY* a, const ARRAY*, ARRAY* evals, ARRAY*, ARRAY* evecs,     \
+      ARRAY*) {                                                              \
+    return TiledArray::ad::edetail::heig_aug(a, evals, evecs, POLICY);       \
+  }                                                                          \
+  static TA_AD_RULE void ta_ad_heig_##SUFFIX##_rev(                          \
+      const ARRAY*, ARRAY* da, const ARRAY*, const ARRAY* devals,            \
+      const ARRAY*, const ARRAY* devecs, void* tape) {                       \
+    TiledArray::ad::edetail::heig_rev(da, devals, devecs, POLICY, tape);     \
+  }                                                                          \
+  static TA_AD_RULE void ta_ad_heig_##SUFFIX##_fwd(                          \
+      const ARRAY* a, const ARRAY* da, ARRAY* evals, ARRAY* devals,          \
+      ARRAY* evecs, ARRAY* devecs) {                                         \
+    TiledArray::ad::edetail::heig_fwd(a, da, evals, devals, evecs, devecs,   \
+                                      POLICY);                               \
+  }                                                                          \
+  TA_AD_REGISTER_GRADIENT(ta_ad_heig_##SUFFIX, ta_ad_heig_##SUFFIX,          \
+                          ta_ad_heig_##SUFFIX##_aug,                         \
+                          ta_ad_heig_##SUFFIX##_rev);                        \
+  TA_AD_REGISTER_DERIVATIVE(ta_ad_heig_##SUFFIX, ta_ad_heig_##SUFFIX,        \
+                            ta_ad_heig_##SUFFIX##_fwd)
 
 // ---------------------------------------------------------------------------
 // Spec-free rule macros: array->array and array->scalar primitives whose only
