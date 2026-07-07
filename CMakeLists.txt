@@ -189,6 +189,12 @@ set(TILEDARRAY_ENABLE_GLOBAL_COMM_STATS_TRACE ${TA_TRACE_GLOBAL_COMM_STATS})
 option(TA_TTG "Enable search/build of TTG library" OFF)
 add_feature_info(TA_TTG TA_TTG "TTG library")
 
+# Automatic differentiation: native C++ AD layer (src/TiledArray/ad/);
+# no external dependency, no special toolchain.
+# See tiledarray_autodiff_plan.md (B4).
+option(TA_ENABLE_AD "Enable TiledArray's native C++ automatic-differentiation layer" OFF)
+add_feature_info(AD TA_ENABLE_AD "Native C++ automatic-differentiation layer (forward/reverse over TiledArray primitives)")
+
 option(IntelMKL_FAIR_DISPATCH "Enable fair dispatch in Intel MKL" OFF)
 add_feature_info(IntelMKL_FAIR_DISPATCH IntelMKL_FAIR_DISPATCH "Use of fair dispatch in Intel MKL")
 
