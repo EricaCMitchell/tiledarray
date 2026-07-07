@@ -193,6 +193,92 @@ struct lifter<Dual<T>> {
   }
 };
 
+/// Build the gap matrix `F = φ(Δ)`, `Δ_ij = λ_j − λ_i`, in the B1 primitive
+/// set (so `T` may be `Array` or any `Dual<>` nesting — the route to
+/// forward-over-reverse).
+///
+/// `error` policy: `φ(x) = x==0 ? 0 : 1/x` — once `enforce_degeneracy_policy`
+/// has passed, the diagonal is the only exact zero. `broaden`: Lorentzian
+/// `φ_ε(x) = x/(x²+ε)` — smooth, and `φ_ε(0) = 0` handles the diagonal for
+/// free.
+template <typename T>
+T make_f_matrix(const T& evals, const HeigDiffPolicy& policy) {
+  using Plain = plain_array_t<T>;
+  using S = typename Plain::numeric_type;
+  T ones = lifter<T>::lift(ones_like(primal_of(evals)));
+  T lam_j = ad::contract(ones, evals, "i", "j", "i,j");  // Δ_ij = λ_j − λ_i
+  T lam_i = ad::contract(evals, ones, "i", "j", "i,j");
+  T delta = ad::subt(lam_j, lam_i);
+  if (policy.on_degeneracy == HeigDiffPolicy::Degeneracy::broaden) {
+    const auto eps = static_cast<decltype(std::abs(S{}))>(policy.broadening);
+    return ad::elementwise(
+        delta, [eps](S x) { return x / (x * x + eps); },
+        [eps](S x) {
+          auto d = x * x + eps;
+          return (eps - x * x) / (d * d);
+        });
+  }
+  return ad::elementwise(
+      delta, [](S x) { return x == S{0} ? S{0} : S{1} / x; },
+      [](S x) { return x == S{0} ? S{0} : S{-1} / (x * x); });
+}
+
+/// JVP kernel: `(dλ, dU)` from `(λ, U, dA)` —
+/// `M = Uᴴ dA U`, `dλ = diag(M)`, `dU = U (F ∘ M)`.
+///
+/// Forward mode is eager (`dU` always computed), so the degeneracy policy is
+/// enforced unconditionally here.
+template <typename T>
+std::pair<T, T> heig_jvp(const T& evals, const T& evecs, const T& da,
+                         const HeigDiffPolicy& policy, double min_gap) {
+  enforce_degeneracy_policy(policy, min_gap);  // dU always needs F
+  T Uc = ad::conj(evecs);
+  T M = ad::contract(ad::contract(Uc, da, "k,i", "k,l", "i,l"), evecs, "i,l",
+                     "l,j", "i,j");  // Uᴴ dA U
+  T I = lifter<T>::lift(identity_like(primal_of(evecs)));
+  T ones = lifter<T>::lift(ones_like(primal_of(evals)));
+  T dlam = ad::contract(ad::mult(M, I), ones, "i,j", "j", "i");  // diag(M)
+  T F = make_f_matrix(evals, policy);
+  T dU = ad::contract(evecs, ad::mult(F, M), "i,k", "k,j", "i,j");
+  return {std::move(dlam), std::move(dU)};
+}
+
+/// VJP kernel: Hermitian-projected `Ā` from `(λ, U, λ̄?, Ū?)`; a null
+/// cotangent pointer is the symbolic zero.
+///
+/// `Ā = U [ diag(λ̄) + F ∘ (UᴴŪ − ŪᴴU)/2 ] Uᴴ`, then `(Ā + Āᴴ)/2`. `F` is
+/// built **only** when `ubar` is nonnull, so the eigenvalue-only
+/// (Hellmann–Feynman) path never trips the degeneracy policy.
+template <typename T>
+T heig_vjp(const T& evals, const T& evecs, const T* lbar, const T* ubar,
+           const HeigDiffPolicy& policy, double min_gap) {
+  TA_ASSERT(lbar || ubar);
+  using S = typename plain_array_t<T>::numeric_type;
+  T Uc = ad::conj(evecs);
+  std::optional<T> G;
+  if (lbar) {  // diag(λ̄) = (λ̄ ⊗ 1) ∘ I
+    T ones = lifter<T>::lift(ones_like(primal_of(evals)));
+    T I = lifter<T>::lift(identity_like(primal_of(evecs)));
+    G = ad::mult(ad::contract(*lbar, ones, "i", "j", "i,j"), I);
+  }
+  if (ubar) {  // F needed → the policy fires lazily, only on this branch
+    enforce_degeneracy_policy(policy, min_gap);
+    T F = make_f_matrix(evals, policy);
+    T P = ad::contract(Uc, *ubar, "k,i", "k,j", "i,j");  // UᴴŪ
+    T skew = ad::scale(ad::subt(P, ad::permute(ad::conj(P), "i,j", "j,i")),
+                       S{0.5});  // (P − Pᴴ)/2
+    T FS = ad::mult(F, skew);
+    G = G ? std::optional<T>(ad::add(*G, FS)) : std::optional<T>(std::move(FS));
+  }
+  T A1 = ad::contract(ad::contract(evecs, *G, "i,k", "k,j", "i,j"), Uc, "i,k",
+                      "j,k", "i,j");  // U G Uᴴ
+  // project onto the Hermitian tangent space (the input is constrained
+  // Hermitian; this also folds Im(λ̄) away — λ is real, so only Re(λ̄) can
+  // matter under the Re⟨·,·⟩ pairing): Ā = (A1 + A1ᴴ)/2
+  return ad::scale(ad::add(A1, ad::permute(ad::conj(A1), "i,j", "j,i")),
+                   S{0.5});
+}
+
 }  // namespace detail
 
 /// Functional (primal-only) differentiable-eigendecomposition entry point.

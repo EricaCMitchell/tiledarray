@@ -184,4 +184,58 @@ BOOST_AUTO_TEST_CASE(structure_helpers) {
   BOOST_CHECK_SMALL(max_abs_diff(back, v), 1e-13);
 }
 
+BOOST_AUTO_TEST_CASE(f_matrix_values) {
+  // evals = [1, 2, 4] as a single-tile rank-1 array
+  const TiledRange trE{{0, 3}};
+  const double vals[3] = {1.0, 2.0, 4.0};
+  RArray evals(*GlobalFixture::world, trE);
+  evals.init_elements([&vals](const auto& idx) { return vals[idx[0]]; });
+
+  auto check_f = [&](const RArray& F, double tol) {
+    for (auto idx : *F.pmap()) {
+      if (F.is_zero(idx)) continue;
+      auto tile = F.find(idx).get();
+      for (auto e : tile.range()) {
+        const double expected =
+            e[0] == e[1] ? 0.0 : 1.0 / (vals[e[1]] - vals[e[0]]);
+        BOOST_CHECK_SMALL(tile(e) - expected, tol);
+      }
+    }
+  };
+
+  // error policy: exact reciprocal gaps, antisymmetric, zero diagonal
+  check_f(ad::detail::make_f_matrix(evals, ad::HeigDiffPolicy{}), 1e-14);
+
+  // broaden (default ε = 1e-12) on a well-gapped spectrum: same within 1e-9
+  ad::HeigDiffPolicy broaden{ad::HeigDiffPolicy::Degeneracy::broaden};
+  check_f(ad::detail::make_f_matrix(evals, broaden), 1e-9);
+}
+
+BOOST_AUTO_TEST_CASE(jvp_vjp_kernel_adjoint_consistency) {
+  // the defining adjoint identity, exact linear algebra (no FD):
+  //   Re⟨λ̄, dλ⟩ + Re⟨Ū, dU⟩ == Re⟨Ā, dA⟩
+  // for Hermitian dA (the input is constrained Hermitian, so Ā is
+  // Hermitian-projected and only pairs correctly against Hermitian dA)
+  auto run = [&](auto tag) {
+    using Array = decltype(tag);
+    Array A = rand_hermitian<Array>(trSq);
+    auto r = ad::heig(A);
+    Array dA = rand_hermitian<Array>(trSq);
+    Array lbar = rand_array<Array>(trV);
+    Array ubar = rand_array<Array>(trSq);
+
+    auto [dlam, dU] = ad::detail::heig_jvp(r.evals, r.evecs, dA,
+                                           ad::HeigDiffPolicy{}, r.min_gap);
+    Array abar = ad::detail::heig_vjp(r.evals, r.evecs, &lbar, &ubar,
+                                      ad::HeigDiffPolicy{}, r.min_gap);
+
+    const double lhs = std::real(ad::inner_product(lbar, dlam)) +
+                       std::real(ad::inner_product(ubar, dU));
+    const double rhs = std::real(ad::inner_product(abar, dA));
+    BOOST_CHECK_SMALL(lhs - rhs, 1e-9);
+  };
+  run(RArray{});
+  run(CArray{});
+}
+
 BOOST_AUTO_TEST_SUITE_END()
