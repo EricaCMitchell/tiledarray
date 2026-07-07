@@ -307,6 +307,29 @@ HeigResult<Array> heig(const Array& a, const HeigDiffPolicy& /*policy*/ = {},
   return {std::move(evals), std::move(evecs), min_gap};
 }
 
+/// Forward-mode (JVP) rule for `heig`.
+///
+/// Forward mode is *eager*: both `dλ` and `dU` are computed whenever the
+/// input carries a tangent, so the degeneracy policy fires at this call
+/// (unlike reverse mode's lazy F — see the file header). A constant input
+/// yields constant outputs (symbolic-zero tangents) and never builds F.
+///
+/// The JVP kernel is invoked with `T = Array`, which may itself be a
+/// `Dual<...>` — higher-order forward nesting needs nothing extra.
+template <typename Array>
+HeigResult<Dual<Array>> heig(const Dual<Array>& a,
+                             const HeigDiffPolicy& policy = {},
+                             TiledRange evec_trange = TiledRange()) {
+  auto p = ad::heig(a.primal, policy, std::move(evec_trange));
+  if (!a.has_tangent())
+    return {make_constant(std::move(p.evals)),
+            make_constant(std::move(p.evecs)), p.min_gap};
+  auto [dlam, dU] =
+      detail::heig_jvp(p.evals, p.evecs, *a.tangent, policy, p.min_gap);
+  return {make_dual(std::move(p.evals), std::move(dlam)),
+          make_dual(std::move(p.evecs), std::move(dU)), p.min_gap};
+}
+
 }  // namespace TiledArray::ad
 
 #endif  // TILEDARRAY_AD_HEIG_H__INCLUDED

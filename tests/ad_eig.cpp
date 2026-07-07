@@ -238,4 +238,87 @@ BOOST_AUTO_TEST_CASE(jvp_vjp_kernel_adjoint_consistency) {
   run(CArray{});
 }
 
+// f(A) = Σ_i w_i λ_i as a plain-array function (for FD reference values)
+double weighted_evals(const RArray& A, const RArray& w) {
+  auto r = ad::heig(A);
+  return ad::dot(w, r.evals);
+}
+
+// g(A) = ⟨B, U W Uᵀ⟩ with W = diag(w) — gauge-invariant in U (each column
+// enters as w_i u_i u_iᵀ, immune to sign flips)
+double evec_functional(const RArray& A, const RArray& B, const RArray& Wd) {
+  auto r = ad::heig(A);
+  RArray T1 = ad::contract(r.evecs, Wd, "i,k", "k,l", "i,l");
+  RArray T2 = ad::contract(T1, r.evecs, "i,l", "j,l", "i,j");  // U W Uᵀ
+  return ad::dot(B, T2);
+}
+
+BOOST_AUTO_TEST_CASE(forward_evals_fd) {
+  RArray A = rand_hermitian<RArray>(trSq);
+  RArray dA = rand_hermitian<RArray>(trSq);
+  RArray w = rand_array<RArray>(trV);
+
+  auto r = ad::heig(ad::make_dual(A, dA));
+  BOOST_REQUIRE(r.evals.has_tangent());
+  const double jvp = ad::dot(ad::make_constant(w), r.evals).tangent;
+
+  const double h = 1e-5;
+  const double fd = (weighted_evals(ad::add(A, ad::scale(dA, h)), w) -
+                     weighted_evals(ad::subt(A, ad::scale(dA, h)), w)) /
+                    (2 * h);
+  BOOST_CHECK_CLOSE(jvp, fd, 1e-3);  // percent → rel 1e-5
+}
+
+BOOST_AUTO_TEST_CASE(forward_evecs_fd) {
+  RArray A = rand_hermitian<RArray>(trSq);
+  RArray dA = rand_hermitian<RArray>(trSq);
+  RArray B = rand_hermitian<RArray>(trSq);
+  // W = diag(w) with distinct weights
+  RArray Wd(*GlobalFixture::world, trSq);
+  Wd.init_elements([](const auto& idx) {
+    return idx[0] == idx[1] ? 1.0 + 0.5 * idx[0] : 0.0;
+  });
+
+  auto r = ad::heig(ad::make_dual(A, dA));
+  BOOST_REQUIRE(r.evecs.has_tangent());
+  auto Bc = ad::make_constant(B);
+  auto Wc = ad::make_constant(Wd);
+  auto T1 = ad::contract(r.evecs, Wc, "i,k", "k,l", "i,l");
+  auto T2 = ad::contract(T1, r.evecs, "i,l", "j,l", "i,j");
+  const double jvp = ad::dot(Bc, T2).tangent;
+
+  const double h = 1e-5;
+  const double fd = (evec_functional(ad::add(A, ad::scale(dA, h)), B, Wd) -
+                     evec_functional(ad::subt(A, ad::scale(dA, h)), B, Wd)) /
+                    (2 * h);
+  BOOST_CHECK_CLOSE(jvp, fd, 1e-3);
+}
+
+BOOST_AUTO_TEST_CASE(forward_degenerate_policy) {
+  // exactly degenerate spectrum {1, 1, 2, 3}; forward mode is eager, so an
+  // active tangent must trip the error policy at the call
+  RArray D(*GlobalFixture::world, trSq);
+  const double dvals[4] = {1.0, 1.0, 2.0, 3.0};
+  D.init_elements([&dvals](const auto& idx) {
+    return idx[0] == idx[1] ? dvals[idx[0]] : 0.0;
+  });
+  RArray dA = rand_hermitian<RArray>(trSq);
+
+  BOOST_CHECK_THROW(ad::heig(ad::make_dual(D, dA)), TiledArray::Exception);
+
+  ad::HeigDiffPolicy broaden{ad::HeigDiffPolicy::Degeneracy::broaden};
+  auto r = ad::heig(ad::make_dual(D, dA), broaden);
+  BOOST_REQUIRE(r.evecs.has_tangent());
+  BOOST_CHECK(std::isfinite(ad::norm2(*r.evecs.tangent)));
+  BOOST_CHECK(std::isfinite(ad::norm2(*r.evals.tangent)));
+}
+
+BOOST_AUTO_TEST_CASE(forward_constant_input) {
+  RArray A = rand_hermitian<RArray>(trSq);
+  auto r = ad::heig(ad::make_constant(A));
+  BOOST_CHECK(!r.evals.has_tangent());
+  BOOST_CHECK(!r.evecs.has_tangent());
+  BOOST_CHECK(r.min_gap > 0);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
