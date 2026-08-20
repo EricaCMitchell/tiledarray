@@ -112,7 +112,8 @@ def _(s):
 @scenario("norm2")
 def _(s):
     inp, out, _ = make_accessors(s)
-    return [Check("s", to_np(torch.linalg.norm(inp["A"])), scalar(out["s"]), LOOSE)]
+    return [Check("s", to_np(torch.linalg.norm(inp["A"])),  # pylint: disable=not-callable
+                  scalar(out["s"]), LOOSE)]
 
 
 @scenario("dot")
@@ -130,7 +131,8 @@ def _(s):
 
 # ---- forward mode / JVP --------------------------------------------------- #
 def _jvp_checks(f, primals, tangents, out, want_tangent="tangent",
-                primal_key="primal", tol=TIGHT):
+                primal_key="primal", tol=None):
+    tol = TIGHT if tol is None else tol
     primal_out, tangent_out = torch.func.jvp(f, primals, tangents)
     g_primal = out[primal_key]
     g_tangent = out[want_tangent]
@@ -247,13 +249,15 @@ def _(s):
 
 
 # ---- reverse mode / VJP (real) -------------------------------------------- #
-def _vjp_array(f, primals, cotangent, out, names, tol=TIGHT):
+def _vjp_array(f, primals, cotangent, out, names, tol=None):
+    tol = TIGHT if tol is None else tol
     _, vjp_fn = torch.func.vjp(f, *primals)
     grads = vjp_fn(cotangent)
     return [Check(n, to_np(g), tensor_np(out[n]), tol) for n, g in zip(names, grads)]
 
 
-def _grad_check(f, A, out, key="grad", tol=TIGHT):
+def _grad_check(f, A, out, key="grad", tol=None):
+    tol = TIGHT if tol is None else tol
     g = torch.func.grad(f)(A)
     return [Check(key, to_np(g), tensor_np(out[key]), tol)]
 

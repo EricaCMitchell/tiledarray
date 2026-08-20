@@ -119,7 +119,8 @@ def _(s):
 
 # ---- forward mode / JVP --------------------------------------------------- #
 def _jvp_checks(f, primals, tangents, out, want_tangent="tangent",
-                primal_key="primal", tol=TIGHT):
+                primal_key="primal", tol=None):
+    tol = TIGHT if tol is None else tol
     primal_out, tangent_out = jax.jvp(f, primals, tangents)
     g_primal = out[primal_key]
     g_tangent = out[want_tangent]
@@ -236,7 +237,8 @@ def _(s):
 
 
 # ---- reverse mode / VJP (real) -------------------------------------------- #
-def _vjp_array(f, primals, cotangent, out, names, tol=TIGHT):
+def _vjp_array(f, primals, cotangent, out, names, tol=None):
+    tol = TIGHT if tol is None else tol
     _, vjp = jax.vjp(f, *primals)
     grads = vjp(cotangent)
     return [Check(n, g, tensor(out[n]), tol) for n, g in zip(names, grads)]
@@ -273,7 +275,8 @@ def _(s):
     return _vjp_array(f, (inp["A"], inp["B"]), inp["Cbar"], out, ["Abar", "Bbar"])
 
 
-def _grad_check(f, A, out, key="grad", tol=TIGHT):
+def _grad_check(f, A, out, key="grad", tol=None):
+    tol = TIGHT if tol is None else tol
     return [Check(key, jax.grad(f)(A), tensor(out[key]), tol)]
 
 
@@ -382,7 +385,7 @@ def _(s):
 # ---- block-sparse contract VJP -------------------------------------------- #
 @scenario("sparse_contract_vjp")
 def _(s):
-    inp, out, par = make_accessors(s)
+    inp, out, _ = make_accessors(s)
     f = lambda A, B: jnp.einsum("ik,kj->ij", A, B)
     return _vjp_array(f, (inp["A"], inp["B"]), inp["Cbar"], out, ["Abar", "Bbar"])
 
