@@ -16,7 +16,7 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  *  ad_forward.cpp
- *  Phase-1: forward-mode (Dual / JVP) correctness over the primitive set.
+ *  Forward-mode (Dual / JVP) correctness over the primitive set.
  */
 
 #include "tiledarray.h"
@@ -172,8 +172,8 @@ BOOST_AUTO_TEST_CASE(reduction_jvps) {
   BOOST_CHECK_CLOSE(dotd.tangent, dot_fd, 1e-4);
 }
 
-// Symbolic-zero tangent: a constant Dual carries no tangent, and an op over
-// only-constant operands produces no tangent (unconnected => zero).
+// Symbolic-zero tangent: a constant Dual carries no tangent. An op with only
+// constant operands also gives no tangent.
 BOOST_AUTO_TEST_CASE(constant_has_symbolic_zero_tangent) {
   RArray A = rand_array(trA), B = rand_array(trB);
   auto ca = ad::make_constant(A), cb = ad::make_constant(B);

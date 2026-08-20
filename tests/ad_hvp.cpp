@@ -16,8 +16,8 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  *  ad_hvp.cpp
- *  Phase-1 composability check: a Hessian-vector product via
- *  forward-over-reverse (a forward-mode Dual carried through the reverse tape).
+ *  Composability check: a Hessian-vector product from forward-over-reverse
+ *  mode. A forward-mode Dual goes through the reverse tape.
  */
 
 #include "tiledarray.h"
@@ -61,8 +61,8 @@ double max_abs_diff(const RArray& x, const RArray& y) {
   return m;
 }
 
-// E(X) = ||X·X||^2.  Its gradient (computed by plain reverse mode, seeding the
-// squared-norm cotangent C̄ = 2C explicitly) is g(X) = ∂E/∂X.
+// E(X) = ||X·X||^2. Plain reverse mode gives the gradient g(X) = ∂E/∂X, with
+// the squared-norm cotangent C̄ = 2C as an explicit seed.
 RArray grad_E(const RArray& X) {
   ad::Tape<RArray> tape;
   auto vx = ad::make_leaf(tape, X);
@@ -77,10 +77,10 @@ RArray grad_E(const RArray& X) {
 
 BOOST_AUTO_TEST_SUITE(ad_hvp_suite)
 
-// Forward-over-reverse: run the gradient computation on Dual<RArray> leaves
-// seeded with the direction v. The reverse pass — being expressed entirely in
-// B1 primitives — dispatches to the Dual overloads, so the resulting gradient
-// carries g as its primal and the Hessian-vector product Hv as its tangent.
+// Forward-over-reverse: the gradient computation runs on Dual<RArray> leaves
+// seeded with the direction v. The reverse pass uses only the AD primitives, so
+// it dispatches to the Dual overloads. The gradient then carries g as its
+// primal and the Hessian-vector product Hv as its tangent.
 BOOST_AUTO_TEST_CASE(hessian_vector_product_matches_fd_of_gradient) {
   TiledRange trSq{{0, 2, 4}, {0, 2, 4}};  // 4x4, square for X·X
   RArray A = rand_array(trSq), v = rand_array(trSq);

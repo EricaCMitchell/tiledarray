@@ -16,8 +16,8 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  *  ad_sparse.cpp
- *  Phase-1: block-sparse cotangent-sparsity (B3) — deterministic structure and
- *  value-correctness vs a dense recompute.
+ *  Block-sparse cotangent sparsity: deterministic structure, and values that
+ *  agree with a dense recompute.
  */
 
 #include "tiledarray.h"
@@ -88,8 +88,9 @@ struct SparseFixture {
 
 BOOST_FIXTURE_TEST_SUITE(ad_sparse_suite, SparseFixture)
 
-// The contract VJP on block-sparse operands agrees with the dense recompute,
-// and the gradient's sparsity structure is deterministic across runs.
+// The contract VJP on block-sparse operands must agree with the dense
+// recompute. The sparsity structure of the gradient must not change between
+// runs.
 BOOST_AUTO_TEST_CASE(contract_vjp_block_sparse) {
   auto patA = [](const auto& idx) { return !(idx[0] == 0 && idx[1] == 1); };
   auto patB = [](const auto& idx) { return !(idx[0] == 2 && idx[1] == 0); };

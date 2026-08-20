@@ -18,13 +18,11 @@
  *  produce.cpp
  *  Producer for the AD dual-verification harness (tests/ad_verify/).
  *
- *  Runs the native C++ AD layer (`src/TiledArray/ad/`) on deterministic inputs
- *  and dumps inputs, parameters, and results to `golden.json`. Companion
- *  verifiers (`verify_jax.py`, `verify_torch.py`) recompute the references
- *  independently and assert agreement. This file is the *subject under test*;
- *  JAX and PyTorch are independent oracles. Built on demand (`ninja ad_produce`),
- *  never with `all` -- so it is immune to the unrelated `arena_tensor_kernels`
- *  break that blocks the monolithic `ta_test`.
+ *  Runs the C++ AD layer (`src/TiledArray/ad/`) on deterministic inputs and
+ *  writes the inputs, parameters, and results to `golden.json`. The verifiers
+ *  `verify_jax.py` and `verify_torch.py` recompute the same quantities and
+ *  compare them. This file is the subject under test. JAX and PyTorch are the
+ *  independent oracles. Build it on demand with the `ad_produce` target.
  */
 
 #include <complex>
@@ -53,11 +51,11 @@ using CArray = TA::TArray<std::complex<double>>;   // dense complex
 using SpArray = TA::TSpArray<double>;              // sparse real
 
 // ---------------------------------------------------------------------------
-// Minimal JSON DOM + writer (no external dependency).
+// Minimal JSON DOM and writer (no external dependency).
 //
-// Numbers are printed at std::setprecision(17) so float64/complex128 round-trip
-// to Python exactly. Strings here are only annotations / fn tags / names, none
-// of which contain quotes or backslashes, so no escaping is needed.
+// Numbers use std::setprecision(17), so float64 and complex128 values
+// round-trip to Python exactly. The strings are annotations, function tags, and
+// names. None of them contains a quote or a backslash, so no escape is needed.
 // ---------------------------------------------------------------------------
 struct JsonValue;
 using JsonObj = std::vector<std::pair<std::string, JsonValue>>;
@@ -106,10 +104,10 @@ struct JsonValue {
 // ---------------------------------------------------------------------------
 // Deterministic input generation.
 //
-// A fixed-seed mt19937_64 + uniform_real_distribution(-1, 1) drives all fills,
-// in a fixed (tiles_range, then within-tile) traversal order, so a re-run
-// reproduces byte-identical inputs. RNG is *not* shared with Python: the
-// producer emits the actual values it used (see plan section 2).
+// A fixed-seed mt19937_64 with uniform_real_distribution(-1, 1) fills every
+// array. The traversal order is fixed: tiles_range first, then the elements in
+// each tile. A second run therefore gives the same bytes. Python does not share
+// this generator. The producer writes the values that it used.
 // ---------------------------------------------------------------------------
 std::mt19937_64 g_rng(0xA5A5C0FFEEULL);
 std::uniform_real_distribution<double> g_dist(-1.0, 1.0);
@@ -159,11 +157,12 @@ SpArray make_sparse(World& world, const TiledRange& tr, Pred nonzero) {
 }
 
 // ---------------------------------------------------------------------------
-// Flatten a DistArray to row-major (plan section 4.1, `to_rowmajor`).
+// Flatten a DistArray to row-major order.
 //
-// Iterates elements_range() in row-major order, reading each element from its
-// owning tile (all local at np=1). Sparse zero tiles contribute zeros. Complex
-// data is interleaved [re, im, re, im, ...] with a "complex" flag.
+// Iterates elements_range() in row-major order and reads each element from the
+// tile that owns it. At np=1 every tile is local. Zero tiles of a sparse array
+// give zeros. Complex data is interleaved as [re, im, re, im, ...] and carries
+// a "complex" flag.
 // ---------------------------------------------------------------------------
 template <typename Array>
 JsonValue tensor_json(const Array& a) {
@@ -252,19 +251,20 @@ struct Scenario {
   }
 };
 
-// Elementwise functions used by `elementwise` scenarios, tagged for the verifier.
+// Elementwise functions for the `elementwise` scenarios, tagged for the
+// verifier.
 auto sq = [](double x) { return x * x; };
 auto dsq = [](double x) { return 2.0 * x; };
 auto cube = [](double x) { return x * x * x; };
 auto dcube = [](double x) { return 3.0 * x * x; };
 
-// Complex elementwise f(z) = 1/2 z^2 and its (holomorphic) derivative f'(z) = z.
-// This is Krämer's "1/2 z^2" convention litmus (AUTODIFF_BACKGROUND.md section 6.3).
+// Complex elementwise f(z) = 1/2 z^2 and its holomorphic derivative f'(z) = z,
+// for the convention litmus below.
 auto half_sq = [](std::complex<double> z) { return 0.5 * z * z; };
 auto half_sq_deriv = [](std::complex<double> z) { return z; };
 
 // ===========================================================================
-// Scenario builders, grouped to mirror the six ad_*.cpp test files.
+// Scenario builders. The groups match the six ad_*.cpp test files.
 // ===========================================================================
 
 void forward_values(World& world) {
@@ -429,21 +429,19 @@ void forward_jvp(World& world) {
   }
 }
 
-// Complex forward mode. Unlike the VJP, the JVP (pushforward) is convention-
-// independent -- it is just the differential dC = (df/dA) dA + (df/dB) dB -- so
-// the "plus" (PyTorch) vs "minus" (JAX) gradient-convention split (section 6.3)
-// does NOT appear here and no adapter is needed: jax.jvp is a direct oracle.
-// What these scenarios DO exercise is the section-6.2 structural feature of
-// complex AD: for a non-holomorphic op the *tangent itself appears conjugated*
-// (`conj(dA)`), which has no analogue in the real rules.
+// Complex forward mode. The JVP does not depend on the gradient convention: it
+// is the differential dC = (df/dA) dA + (df/dB) dB. The "plus" (PyTorch) and
+// "minus" (JAX) split therefore does not appear here, and jax.jvp is a direct
+// oracle. These scenarios test a feature of complex AD that the real rules do
+// not have: for an op that is not holomorphic, the tangent itself is
+// conjugated (`conj(dA)`).
 void forward_jvp_complex(World& world) {
   const TiledRange tr2{{0, 2, 5}, {0, 2, 3}};
   CArray A = make_dense<CArray>(world, tr2), B = make_dense<CArray>(world, tr2);
   CArray dA = make_dense<CArray>(world, tr2), dB = make_dense<CArray>(world, tr2);
   auto da = ad::make_dual(A, dA), db = ad::make_dual(B, dB);
 
-  // conj JVP (antilinear): tangent = conj(dA) -- the conjugated tangent in
-  // its purest form (section 2.4 / 6.2).
+  // conj JVP (antilinear): tangent = conj(dA), the conjugated tangent alone.
   {
     auto dc = ad::conj(da);
     Scenario("complex_conj_jvp")
@@ -451,8 +449,8 @@ void forward_jvp_complex(World& world) {
         .out("primal", dc.primal).out("tangent", *dc.tangent)
         .commit();
   }
-  // dot JVP (bilinear, holomorphic): tangent = dot(dA,B) + dot(A,dB), NO
-  // conjugation -- the holomorphic control case (section 2.1).
+  // dot JVP (bilinear, holomorphic): tangent = dot(dA,B) + dot(A,dB), with no
+  // conjugation. This is the holomorphic control case.
   {
     auto ds = ad::dot(da, db);
     Scenario("complex_dot_jvp")
@@ -460,9 +458,9 @@ void forward_jvp_complex(World& world) {
         .out_scalar("primal", ds.primal).out_scalar("tangent", ds.tangent)
         .commit();
   }
-  // inner_product JVP (sesquilinear): tangent = <dA,B> + <A,dB> = sum(conj(dA)*B)
-  // + sum(conj(A)*dB) -- conj(dA) appears, the section-6.2 case that cannot be
-  // obtained by analogy to the real rule.
+  // inner_product JVP (sesquilinear): tangent = <dA,B> + <A,dB>, which is
+  // sum(conj(dA)*B) + sum(conj(A)*dB). conj(dA) appears, and no analogy to the
+  // real rule gives it.
   {
     auto ds = ad::inner_product(da, db);
     Scenario("complex_inner_product_jvp")
@@ -481,7 +479,7 @@ void reverse_vjp(World& world) {
   const TiledRange trSq{{0, 2, 4}, {0, 2, 4}};
   const std::string aA = "i,k", aB = "k,j", aC = "i,j";
 
-  // contract VJP (the step-1 end-to-end scenario)
+  // contract VJP
   {
     RArray A = make_dense<RArray>(world, trA), B = make_dense<RArray>(world, trB);
     RArray Cbar = make_dense<RArray>(world, trC);
@@ -609,13 +607,13 @@ void reverse_vjp_complex(World& world) {
   }
 }
 
-// Krämer's "1/2 z^2" convention litmus (AUTODIFF_BACKGROUND.md section 6.3,
-// Table 1 / Fig. 4). The gradient of f(z) = 1/2 z^2 at z = 1 + i is:
-//   * 1 - i  under the "plus"/conjugating (PyTorch/TF) convention -- THIS tape;
-//   * 1 + i  under the "minus"/non-conjugating (JAX) convention.
-// The tape's elementwise VJP is `Ā = conj(f'(z)) * C̄` (tape.h), so with the
-// gradient seed C̄ = 1 it yields conj(f'(z)) = conj(z) = 1 - i, pinning the
-// plus convention deliberately and visibly (the doc's explicit recommendation).
+// The 1/2 z^2 convention litmus. The gradient of f(z) = 1/2 z^2 at z = 1 + i
+// is:
+//   * 1 - i under the conjugating ("plus") convention of PyTorch and this tape;
+//   * 1 + i under the non-conjugating ("minus") convention of JAX.
+// The elementwise VJP of the tape is Ā = conj(f'(z)) * C̄ (tape.h). With the
+// gradient seed C̄ = 1 it gives conj(z) = 1 - i, which pins the plus
+// convention.
 void complex_litmus(World& world) {
   using cd = std::complex<double>;
   const TiledRange tr1{{0, 1}};  // a single 1-D element
@@ -642,7 +640,7 @@ void complex_litmus(World& world) {
       .commit();
 }
 
-// E(X) = ||X·X||^2; reverse-mode gradient g = dE/dX (seed C̄ = 2C).
+// E(X) = ||X·X||^2. Reverse-mode gradient g = dE/dX, with the seed C̄ = 2C.
 RArray grad_E(World& world, const RArray& X) {
   ad::Tape<RArray> tape;
   auto vx = ad::make_leaf(tape, X);
@@ -657,7 +655,7 @@ void hvp(World& world) {
   const TiledRange trSq{{0, 2, 4}, {0, 2, 4}};  // 4x4 square
   RArray X = make_dense<RArray>(world, trSq), v = make_dense<RArray>(world, trSq);
 
-  // forward-over-reverse: gradient computed on Dual leaves seeded with v.
+  // Forward-over-reverse: the gradient runs on Dual leaves seeded with v.
   using DualR = ad::Dual<RArray>;
   ad::Tape<DualR> tape;
   auto vx = ad::make_leaf(tape, ad::make_dual(X, v));
@@ -692,7 +690,8 @@ void sparse_contract_vjp(World& world) {
   auto vc = ad::contract(va, vb, aA, aB, aC);
   tape.backward(vc.id, Cbar);
 
-  // densified dump: zero blocks -> zeros, so the dense JAX recompute matches.
+  // The dump is dense: zero blocks become zeros, so the dense recompute of the
+  // oracle matches.
   Scenario("sparse_contract_vjp")
       .in("A", A).in("B", B).in("Cbar", Cbar)
       .param("a_annot", aA).param("b_annot", aB).param("c_annot", aC)
@@ -717,7 +716,7 @@ int main(int argc, char** argv) {
   hvp(world);
   sparse_contract_vjp(world);
 
-  // The output path is argv[1] if given, else golden.json in the cwd.
+  // The output path is argv[1]. If argv[1] is absent, use ./golden.json.
   const std::string out_path = (argc > 1) ? argv[1] : "golden.json";
   if (world.rank() == 0) {
     JsonObj root;

@@ -2,7 +2,7 @@
 
 An independent, re-runnable cross-check of the native C++ autodiff layer
 (`src/TiledArray/ad/`) against two independent oracle frameworks: JAX and
-PyTorch. See `ad_torch_verify_plan.md` (repo root) for the full design.
+PyTorch.
 
 ## Why this exists
 
@@ -24,8 +24,7 @@ evidence than either alone.
 
 For non-holomorphic functions (anything using `conj`, `abs`, an inner product,
 or a norm), the complex VJP has two standard, mutually incompatible sign
-conventions — a framework must pick one (`AUTODIFF_BACKGROUND.md` §6.3, after
-Krämer 2024):
+conventions, and a framework must pick one:
 
 | Framework | Complex-grad convention | Complex VJP comparison | `½z²` grad at `z=1+i` |
 |---|---|---|---|
@@ -89,8 +88,8 @@ minus_ref = torch.conj(ma)     # JAX-convention answer; must DIFFER from tape
 
 The JVP (pushforward) is convention-independent: both `jax.jvp` and
 `torch.func.jvp` compare directly against the tape. The complex JVP scenarios
-pin the `AUTODIFF_BACKGROUND.md` §6.2 structural feature: a non-holomorphic op
-carries a **conjugated tangent** (`conj(dA)`) not present in the real rules.
+pin a structural feature of complex AD: an op that is not holomorphic carries a
+**conjugated tangent** (`conj(dA)`), which the real rules do not have.
 
 ## How to run
 

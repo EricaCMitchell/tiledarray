@@ -3,20 +3,18 @@
 # Copyright (C) 2026  Virginia Tech
 #
 # verify_torch.py
-# PyTorch oracle for the AD dual-verification harness (tests/ad_verify/).
-# Runs alongside verify_jax.py; together they approach the TiledArray tape
-# from opposite sides of the complex-conjugation seam -- PyTorch uses the same
-# "plus"/conjugating convention as the tape (positive control, direct match),
-# while JAX uses the "minus"/non-conjugating convention (negative control,
-# requires an adapter).
+# PyTorch oracle for the AD dual-verification harness (tests/ad_verify/). It
+# runs with verify_jax.py. The two oracles sit on opposite sides of the
+# complex-conjugation seam. PyTorch uses the same conjugating ("plus")
+# convention as the tape, so it is the positive control and matches directly.
+# JAX uses the non-conjugating ("minus") convention and needs an adapter.
 #
-# Reads golden.json (emitted by the C++ producer `ad_produce`), recomputes
-# every scenario's value / JVP / VJP / HVP via torch.func.{jvp,vjp,grad},
-# and asserts agreement with the TiledArray tape to scenario-appropriate
-# tolerances. Exit status is nonzero on any mismatch.
+# Reads golden.json from the C++ producer `ad_produce`, recomputes the value,
+# JVP, VJP, and HVP of each scenario with torch.func.{jvp,vjp,grad}, and
+# compares them to the TiledArray tape. The tolerance depends on the scenario.
+# The exit status is nonzero on any mismatch.
 #
-# Requirements: torch >= 2.0 with torch.func; complex128 via
-# torch.set_default_dtype(torch.float64).
+# Requires torch 2.0 or later, which has torch.func.
 
 import sys
 
@@ -24,7 +22,7 @@ import numpy as np
 import torch
 import torch.func
 
-# float64 / complex128 to match the C++ double / complex<double> precision.
+# float64 and complex128 match the C++ double and complex<double> precision.
 torch.set_default_dtype(torch.float64)
 
 from ad_verify_common import (
@@ -33,7 +31,7 @@ from ad_verify_common import (
 )
 
 # --------------------------------------------------------------------------- #
-# PyTorch tensor decoder and numpy conversion
+# PyTorch tensor decoder and NumPy conversion.
 # --------------------------------------------------------------------------- #
 def tensor(obj):
     """Decode a {shape, complex, data} object into a torch tensor (row-major)."""
@@ -56,12 +54,12 @@ def make_accessors(s):
 
 
 # --------------------------------------------------------------------------- #
-# PyTorch AD scenarios, one per scenario name.
+# PyTorch AD scenarios, one for each scenario name.
 # --------------------------------------------------------------------------- #
 REGISTRY, scenario = make_scenario_registry()
 
 
-# ---- forward values -------------------------------------------------------- #
+# ---- forward values ------------------------------------------------------- #
 @scenario("subt")
 def _(s):
     inp, out, _ = make_accessors(s)
@@ -130,7 +128,7 @@ def _(s):
                   scalar(out["s"]))]
 
 
-# ---- forward mode / JVP ---------------------------------------------------- #
+# ---- forward mode / JVP --------------------------------------------------- #
 def _jvp_checks(f, primals, tangents, out, want_tangent="tangent",
                 primal_key="primal", tol=TIGHT):
     primal_out, tangent_out = torch.func.jvp(f, primals, tangents)
@@ -222,11 +220,12 @@ def _(s):
                        (inp["dA"], inp["dB"]), out)
 
 
-# ---- complex forward mode / JVP -------------------------------------------- #
-# JVP is convention-independent: compare torch.func.jvp directly, same as JAX.
-# These pin the section-6.2 feature that a non-holomorphic op carries a
-# conjugated tangent (conj(dA)). torch.func.jvp reproduces this because the
-# forward-mode rule for torch.conj conjugates the tangent.
+# ---- complex forward mode / JVP ------------------------------------------- #
+# The JVP does not depend on the gradient convention, so torch.func.jvp is a
+# direct oracle, as jax.jvp is. These scenarios pin the feature that an op which
+# is not holomorphic carries a conjugated tangent, conj(dA). torch.func.jvp
+# gives the same result, because the forward-mode rule for torch.conj
+# conjugates the tangent.
 @scenario("complex_conj_jvp")
 def _(s):
     inp, out, _ = make_accessors(s)
@@ -247,7 +246,7 @@ def _(s):
                        (inp["A"], inp["B"]), (inp["dA"], inp["dB"]), out)
 
 
-# ---- reverse mode / VJP (real) --------------------------------------------- #
+# ---- reverse mode / VJP (real) -------------------------------------------- #
 def _vjp_array(f, primals, cotangent, out, names, tol=TIGHT):
     _, vjp_fn = torch.func.vjp(f, *primals)
     grads = vjp_fn(cotangent)
@@ -326,14 +325,15 @@ def _(s):
     return _grad_check(lambda A: torch.sum(A * P + A * Q), inp["A"], out)
 
 
-# ---- complex VJP seam ------------------------------------------------------- #
-# PyTorch uses the "plus"/conjugating convention -- the same as the TiledArray
-# tape -- so the comparison is DIRECT, no adapter needed (positive control).
+# ---- complex VJP seam ----------------------------------------------------- #
+# PyTorch uses the conjugating ("plus") convention, the same as the TiledArray
+# tape, so the comparison is direct and needs no adapter. This is the positive
+# control.
 #
-# Negative control: reconstruct the "minus" (JAX) value from torch's own vjp
-# via  minus(s̄) = conj( torch.vjp(f)(conj(s̄)) )  and assert it DIFFERS from
-# the tape.  This proves PyTorch genuinely sits on the plus side and the direct
-# match above is not vacuous.
+# Negative control: rebuild the "minus" (JAX) value from the torch vjp with
+# minus(s̄) = conj( torch.vjp(f)(conj(s̄)) ), and assert that it differs from the
+# tape. This shows that PyTorch is on the plus side, and that the direct match
+# above means something.
 def _complex_vjp_checks(s, f):
     inp, out, par = make_accessors(s)
     sbar = scalar(par["sbar"])
@@ -345,7 +345,7 @@ def _complex_vjp_checks(s, f):
     checks = [Check("Abar(direct)", to_np(ja), tensor_np(out["Abar"])),
               Check("Bbar(direct)", to_np(jb), tensor_np(out["Bbar"]))]
 
-    # minus reconstruction: seed with conj(s̄), then conjugate the result
+    # Rebuild the minus value: seed with conj(s̄), then conjugate the result.
     ma, _ = vjp_fn(torch.conj(sbar_t))
     minus_ref = torch.conj(ma)
     raw_gap = float(np.abs(to_np(minus_ref).ravel()
@@ -364,10 +364,10 @@ def _(s):
     return _complex_vjp_checks(s, lambda A, B: torch.sum(torch.conj(A) * B))
 
 
-# ---- 1/2 z^2 convention litmus --------------------------------------------- #
-# PyTorch's plus convention: vjp_fn(Cbar) directly yields the same 1-i as the
-# tape -- no adapter.  Negative control reconstructs the minus value (1+i) and
-# asserts it differs.
+# ---- 1/2 z^2 convention litmus -------------------------------------------- #
+# Under the plus convention of PyTorch, vjp_fn(Cbar) gives the same 1-i as the
+# tape, with no adapter. The negative control rebuilds the minus value (1+i) and
+# asserts that it differs.
 @scenario("complex_half_sq_litmus")
 def _(s):
     inp, out, _ = make_accessors(s)
@@ -384,7 +384,7 @@ def _(s):
               np.full(grad_golden.shape, 1.0 - 1.0j)),
     ]
 
-    # minus reconstruction: conj( vjp_fn(conj(C̄)) )
+    # Rebuild the minus value: conj( vjp_fn(conj(C̄)) ).
     (ma,) = vjp_fn(torch.conj(Cbar_t))
     minus_ref = torch.conj(ma)
     raw_gap = float(np.abs(to_np(minus_ref).ravel() - grad_golden.ravel()).max())
@@ -393,7 +393,7 @@ def _(s):
     return checks
 
 
-# ---- Hessian-vector product ------------------------------------------------ #
+# ---- Hessian-vector product ----------------------------------------------- #
 @scenario("hvp")
 def _(s):
     inp, out, _ = make_accessors(s)
@@ -404,7 +404,7 @@ def _(s):
             Check("Hv", to_np(Hv_torch), tensor_np(out["Hv"]), LOOSE)]
 
 
-# ---- block-sparse contract VJP --------------------------------------------- #
+# ---- block-sparse contract VJP -------------------------------------------- #
 @scenario("sparse_contract_vjp")
 def _(s):
     inp, out, _ = make_accessors(s)

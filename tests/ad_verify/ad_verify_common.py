@@ -3,10 +3,10 @@
 # Copyright (C) 2026  Virginia Tech
 #
 # ad_verify_common.py
-# Framework-neutral utilities shared by verify_jax.py and verify_torch.py:
-# golden.json decoding, the Check comparison class, tolerances, and the
-# per-backend scenario-runner driver.  Each verifier imports these and
-# provides its own REGISTRY of framework-specific scenario functions.
+# Utilities that verify_jax.py and verify_torch.py share, with no dependency on
+# either framework: golden.json decoding, the Check comparison class, the
+# tolerances, and the scenario driver. Each verifier imports these and gives its
+# own REGISTRY of scenario functions.
 
 import json
 import sys
@@ -14,7 +14,7 @@ import sys
 import numpy as np
 
 # --------------------------------------------------------------------------- #
-# Tolerances (plan section 4.3).
+# Tolerances.
 # --------------------------------------------------------------------------- #
 TIGHT = dict(rtol=1e-11, atol=1e-12)
 LOOSE = dict(rtol=1e-6, atol=1e-9)
@@ -68,8 +68,8 @@ class Check:
 
     @classmethod
     def assertion(cls, label, ok, max_abs, note=""):
-        """Bare pass/fail with a precomputed magnitude (e.g. a negative control),
-        bypassing the allclose comparison."""
+        """Pass or fail with a precomputed magnitude, for example a negative
+        control. Does not call allclose."""
         self = cls.__new__(cls)
         self.label = label
         self.tol = {}

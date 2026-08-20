@@ -16,8 +16,8 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  *  ad_reverse.cpp
- *  Phase-1: reverse-mode (Tape / VJP) correctness over the primitive set,
- *  activity tracking, the frozen-operand guard, and complex conjugate handling.
+ *  Reverse-mode (Tape / VJP) correctness over the primitive set. Also covers
+ *  activity tracking, the frozen-operand guard, and complex conjugation.
  */
 
 #include "tiledarray.h"
@@ -100,9 +100,9 @@ BOOST_AUTO_TEST_CASE(subt_vjp) {
   BOOST_CHECK_SMALL(std::sqrt(db("i,j").squared_norm().get()), 1e-13);
 }
 
-// The adjoint-consistency identity Re<Cbar, JVP(dX)> == Re<VJP(Cbar), dX>
-// applied to the whole chain  C = scale(permute(mult(A,B)))  exercises several
-// rules at once with exact (linear-in-direction) arithmetic.
+// The adjoint-consistency identity Re<Cbar, JVP(dX)> == Re<VJP(Cbar), dX>,
+// applied to the chain C = scale(permute(mult(A,B))). It tests several rules at
+// once. The arithmetic is linear in the direction, so the identity is exact.
 BOOST_AUTO_TEST_CASE(mult_permute_scale_adjoint_consistency) {
   RArray A = rand_array<RArray>(tr2), B = rand_array<RArray>(tr2);
   RArray dA = rand_array<RArray>(tr2), dB = rand_array<RArray>(tr2);
@@ -188,8 +188,8 @@ BOOST_AUTO_TEST_CASE(elementwise_vjp) {
                     ref("i,j").dot(dA("i,j")).get(), 1e-9);
 }
 
-// Complex: dot is bilinear/unconjugated, inner_product is sesquilinear.
-// Verify both VJPs against the analytic conjugate structure of Part A.
+// dot is bilinear (unconjugated). inner_product is sesquilinear. Both VJPs
+// must match the analytic conjugate structure.
 BOOST_AUTO_TEST_CASE(complex_dot_and_inner_product_vjp) {
   CArray A = rand_array<CArray>(tr2), B = rand_array<CArray>(tr2);
   const std::complex<double> sbar(0.3, -0.7);
@@ -224,14 +224,13 @@ BOOST_AUTO_TEST_CASE(complex_dot_and_inner_product_vjp) {
   }
 }
 
-// Complex finite-difference check for the non-holomorphic reductions
-// (squared_norm, norm2) — background §6.2 flags these as the dangerous ones,
-// where a missing conjugate in the VJP fails *silently* (stays finite, no NaN).
-// Both are real-valued, so under the Part A "plus" pairing the gradient Ā
-// satisfies the real directional-derivative identity
+// Finite-difference check of the reductions that are not holomorphic
+// (squared_norm, norm2). A missing conjugate in their VJP gives a finite but
+// wrong gradient, with no NaN, so only a value test finds it. Both reductions
+// are real-valued, so the gradient Ā obeys the directional-derivative identity
 //   d/dε f(A + ε·dA)|₀ = Re⟨Ā, dA⟩,   ⟨x,y⟩ = Σ conj(x)·y,
-// for a complex perturbation dA. The analytic Re(inner_product(Ā, dA)) must
-// therefore match a central finite difference of f along dA.
+// for a complex perturbation dA. Re(inner_product(Ā, dA)) must match a central
+// finite difference of f along dA.
 BOOST_AUTO_TEST_CASE(complex_reduction_vjp_vs_finite_difference) {
   CArray A = rand_array<CArray>(trSq), dA = rand_array<CArray>(trSq);
   const double eps = 1e-4;
@@ -262,15 +261,13 @@ BOOST_AUTO_TEST_CASE(complex_reduction_vjp_vs_finite_difference) {
                     fd([](const CArray& x) { return ad::norm2(x); }), 1e-4);
 }
 
-// Convention litmus (Krämer §6.3, called out as *mandatory* in the plan's
-// Verification section): the gradient of f(z)=½z² at z=1+i must be 1−i under
-// the "plus"/conjugating convention fixed in Part A. A result of 1+i would mean
-// the opposite "minus"/JAX convention had crept in. The mismatch stays finite
-// (no NaN) and is otherwise silent, so this assertion is the decisive guard.
+// Convention litmus: the gradient of f(z)=½z² at z=1+i must be 1−i under the
+// conjugating ("plus") convention that this tape uses. A result of 1+i means
+// that the non-conjugating ("minus") convention got in. The two results are
+// both finite, so this assertion is the only guard.
 //
-// Mechanism: y = Σ ½z² seeded with s̄ = 1 broadcasts C̄ = 1 onto the
-// elementwise op, whose VJP Ā = conj(f'(A))∘C̄ = conj(z) yields exactly the
-// convention's gradient.
+// Mechanism: y = Σ ½z² with the seed s̄ = 1 puts C̄ = 1 on the elementwise op.
+// Its VJP Ā = conj(f'(A))∘C̄ = conj(z) gives the gradient of the convention.
 BOOST_AUTO_TEST_CASE(complex_half_z_squared_convention_litmus) {
   CArray z(*GlobalFixture::world, TiledRange{{0, 1}, {0, 1}});
   for (auto idx : *z.pmap()) {
@@ -293,7 +290,7 @@ BOOST_AUTO_TEST_CASE(complex_half_z_squared_convention_litmus) {
   BOOST_CHECK_CLOSE(g.imag(), -1.0, 1e-12);
 }
 
-// Fan-out: A is consumed by two ops, so reverse must SUM the two cotangents.
+// Fan-out: two ops consume A, so the reverse pass must add the two cotangents.
 // y = sum( (A∘P) + (A∘Q) )  =>  dy/dA = P + Q.
 BOOST_AUTO_TEST_CASE(fan_out_sums_cotangents) {
   RArray A = rand_array<RArray>(tr2);
@@ -327,8 +324,8 @@ BOOST_AUTO_TEST_CASE(inactive_operand_has_no_gradient) {
   BOOST_CHECK(!vb.active);
 }
 
-// Frozen-operand guard: mutating a recorded operand before backward() trips
-// the guard rather than silently returning a wrong gradient.
+// Frozen-operand guard: if code changes a recorded operand before backward(),
+// the guard throws instead of returning a wrong gradient.
 BOOST_AUTO_TEST_CASE(frozen_operand_guard_trips_on_mutation) {
   RArray A = rand_array<RArray>(trA), B = rand_array<RArray>(trB);
   RArray Cbar = rand_array<RArray>(TiledRange{{0, 2, 5}, {0, 2}});

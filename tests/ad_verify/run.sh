@@ -3,9 +3,9 @@
 # Copyright (C) 2026  Virginia Tech
 #
 # run.sh
-# Single pass/fail gate for the AD dual-verification harness (tests/ad_verify/):
-# build the C++ producer once, run it to emit golden.json, run the requested
-# oracle(s), and propagate a nonzero exit code if any verifier fails.
+# One pass/fail gate for the AD dual-verification harness (tests/ad_verify/).
+# It builds the C++ producer, runs it to write golden.json, runs the selected
+# oracles, and exits nonzero if a verifier fails.
 #
 # Usage:   tests/ad_verify/run.sh [jax|torch|both]
 #          (default: both)
@@ -42,9 +42,8 @@ cmake --build "${build_dir}" --target ad_produce
 
 producer="${build_dir}/tests/ad_produce"
 echo ">> producing ${golden}"
-# np=1: one process owns every tile, so the dump is complete and canonical
-# without any cross-rank gather.  MAD_NUM_THREADS keeps the runtime in its
-# standard test configuration.
+# At np=1 one process owns every tile, so the dump is complete and needs no
+# cross-rank gather. MAD_NUM_THREADS keeps the standard test configuration.
 MAD_NUM_THREADS="${MAD_NUM_THREADS:-2}" "${producer}" "${golden}"
 
 overall=0

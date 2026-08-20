@@ -16,7 +16,7 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  *  ad_ops.cpp
- *  Phase-1: forward-value correctness of the full B1 functional primitive set.
+ *  Forward-value correctness of the functional primitive set.
  */
 
 #include "tiledarray.h"

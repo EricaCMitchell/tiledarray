@@ -3,25 +3,24 @@
 # Copyright (C) 2026  Virginia Tech
 #
 # verify_jax.py
-# JAX oracle for the AD dual-verification harness (tests/ad_verify/).
-# Runs alongside verify_torch.py; together they approach the TiledArray tape
-# from opposite sides of the complex-conjugation seam.
+# JAX oracle for the AD dual-verification harness (tests/ad_verify/). It runs
+# with verify_torch.py. The two oracles sit on opposite sides of the
+# complex-conjugation seam.
 #
-# Reads golden.json (emitted by the C++ producer `ad_produce`), recomputes
-# every scenario's value / JVP / VJP / HVP from an independently written
-# jax.numpy reference using jax.grad / jax.jvp / jax.vjp, and asserts agreement
-# with the TiledArray tape to scenario-appropriate tolerances. JAX is a genuinely
-# independent oracle, so agreement is evidence the AD math is correct in an
-# absolute sense, not merely internally self-consistent. Exit status is nonzero
-# on any mismatch -- the harness is a single pass/fail gate.
+# Reads golden.json from the C++ producer `ad_produce`, recomputes the value,
+# JVP, VJP, and HVP of each scenario with jax.grad, jax.jvp, and jax.vjp, and
+# compares them to the TiledArray tape. The tolerance depends on the scenario.
+# JAX is an independent oracle, so agreement shows that the AD math is correct,
+# and not only self-consistent. The exit status is nonzero on any mismatch.
 
 import sys
 
 import numpy as np
 import jax
 
-# float64 / complex128 to match the C++ double / complex<double> precision.
-# Without this JAX silently downcasts to float32 and every check fails at ~1e-7.
+# float64 and complex128 match the C++ double and complex<double> precision.
+# Without this line JAX uses float32 and every check fails at approximately
+# 1e-7.
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402  (must follow the x64 config)
 
@@ -31,7 +30,7 @@ from ad_verify_common import (  # noqa: E402
 )
 
 # --------------------------------------------------------------------------- #
-# JAX tensor decoder (wraps common numpy decoder with jnp.asarray)
+# JAX tensor decoder. Wraps the shared NumPy decoder with jnp.asarray.
 # --------------------------------------------------------------------------- #
 def tensor(obj):
     """Decode a {shape, complex, data} object into a jnp array (row-major)."""
@@ -39,10 +38,9 @@ def tensor(obj):
 
 
 # --------------------------------------------------------------------------- #
-# JAX reference computations, one per scenario name.
-#
-# Each takes the decoded scenario dict and returns a list of Check objects.
-# `inp`/`out`/`par` pull the named tensors/scalars/params.
+# JAX reference computations, one for each scenario name. Each one takes the
+# decoded scenario dict and returns a list of Check objects. `inp`, `out`, and
+# `par` hold the named tensors, scalars, and parameters.
 # --------------------------------------------------------------------------- #
 REGISTRY, scenario = make_scenario_registry()
 
@@ -52,7 +50,7 @@ def make_accessors(s):
     return inp, s["outputs"], s["params"]
 
 
-# ---- 5.1 forward values --------------------------------------------------- #
+# ---- forward values ------------------------------------------------------- #
 @scenario("subt")
 def _(s):
     inp, out, _ = make_accessors(s)
@@ -119,7 +117,7 @@ def _(s):
     return [Check("s", jnp.vdot(inp["A"], inp["B"]), scalar(out["s"]))]
 
 
-# ---- 5.2 forward mode / JVP ----------------------------------------------- #
+# ---- forward mode / JVP --------------------------------------------------- #
 def _jvp_checks(f, primals, tangents, out, want_tangent="tangent",
                 primal_key="primal", tol=TIGHT):
     primal_out, tangent_out = jax.jvp(f, primals, tangents)
@@ -211,12 +209,12 @@ def _(s):
                        (inp["dA"], inp["dB"]), out)
 
 
-# ---- 5.2c complex forward mode / JVP -------------------------------------- #
-# The JVP is the convention-INDEPENDENT pushforward, so the plus/minus
-# gradient-convention split of section 6.3 does not appear and no adapter is
-# needed -- jax.jvp is a direct oracle. These pin the section-6.2 feature that a
-# non-holomorphic op carries a *conjugated tangent* (conj(dA)); jax.jvp
-# reproduces it because the jvp of jnp.conj is conj of the tangent.
+# ---- complex forward mode / JVP ------------------------------------------- #
+# The JVP does not depend on the gradient convention, so the plus/minus split
+# does not appear and no adapter is necessary. jax.jvp is a direct oracle. These
+# scenarios pin the feature that an op which is not holomorphic carries a
+# conjugated tangent, conj(dA). jax.jvp gives the same result, because the JVP
+# of jnp.conj conjugates the tangent.
 @scenario("complex_conj_jvp")
 def _(s):
     inp, out, _ = make_accessors(s)
@@ -237,7 +235,7 @@ def _(s):
                        (inp["A"], inp["B"]), (inp["dA"], inp["dB"]), out)
 
 
-# ---- 5.3 reverse mode / VJP (real) ---------------------------------------- #
+# ---- reverse mode / VJP (real) -------------------------------------------- #
 def _vjp_array(f, primals, cotangent, out, names, tol=TIGHT):
     _, vjp = jax.vjp(f, *primals)
     grads = vjp(cotangent)
@@ -316,11 +314,12 @@ def _(s):
     return _grad_check(lambda A: jnp.sum(A * P + A * Q), inp["A"], out)
 
 
-# ---- 5.6 complex VJP seam ------------------------------------------------- #
-# Adapter (plan section 6): the tape uses the Re<X-bar, dX> pairing, JAX uses a
-# complex-linear vjp. Bridge: seed jax.vjp with conj(s-bar) and conjugate each
-# returned cotangent. For real s-bar conj is the identity, so real scenarios are
-# unaffected. The negative control omits the output conjugation -> must diverge.
+# ---- complex VJP seam ----------------------------------------------------- #
+# Adapter: the tape uses the Re<X-bar, dX> pairing, and JAX uses a
+# complex-linear vjp. To bridge them, seed jax.vjp with conj(s-bar) and
+# conjugate each returned cotangent. For a real s-bar the conjugation is the
+# identity, so it does not change the real scenarios. The negative control drops
+# the output conjugation, and must then differ.
 def _complex_vjp_checks(s, f):
     inp, out, par = make_accessors(s)
     sbar = scalar(par["sbar"])
@@ -328,7 +327,7 @@ def _complex_vjp_checks(s, f):
     ja, jb = vjp(np.conj(sbar))
     checks = [Check("Abar(+adapter)", jnp.conj(ja), tensor(out["Abar"])),
               Check("Bbar(+adapter)", jnp.conj(jb), tensor(out["Bbar"]))]
-    # Negative control: without the conjugation adapter the seam must be visible.
+    # Negative control: without the adapter the seam must be visible.
     raw_gap = float(np.abs(np.asarray(ja).ravel()
                            - np.asarray(tensor(out["Abar"])).ravel()).max())
     checks.append(Check.assertion("seam(no-adapter differs)", raw_gap > 1e-3,
@@ -346,9 +345,10 @@ def _(s):
     return _complex_vjp_checks(s, lambda A, B: jnp.sum(jnp.conj(A) * B))
 
 
-# ---- 5.6b the 1/2 z^2 convention litmus ----------------------------------- #
-# Krämer's litmus: grad of f(z) = 1/2 z^2 at z = 1+i is 1-i under the "plus"/
-# PyTorch convention TA adopts (1+i under JAX's "minus" convention).
+# ---- the 1/2 z^2 convention litmus ---------------------------------------- #
+# The litmus: the gradient of f(z) = 1/2 z^2 at z = 1+i is 1-i under the
+# conjugating ("plus") convention that TA uses, and 1+i under the JAX
+# convention.
 @scenario("complex_half_sq_litmus")
 def _(s):
     inp, out, _ = make_accessors(s)
@@ -368,7 +368,7 @@ def _(s):
     return checks
 
 
-# ---- 5.4 Hessian-vector product ------------------------------------------- #
+# ---- Hessian-vector product ----------------------------------------------- #
 @scenario("hvp")
 def _(s):
     inp, out, _ = make_accessors(s)
@@ -379,7 +379,7 @@ def _(s):
             Check("Hv", Hv_jax, tensor(out["Hv"]), LOOSE)]
 
 
-# ---- 5.5 block-sparse contract VJP ---------------------------------------- #
+# ---- block-sparse contract VJP -------------------------------------------- #
 @scenario("sparse_contract_vjp")
 def _(s):
     inp, out, par = make_accessors(s)
