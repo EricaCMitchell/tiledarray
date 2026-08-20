@@ -30,21 +30,20 @@
 
 /// \file ops.h
 ///
-/// This header defines the *functional* primitive surface (autodiff plan B1)
-/// that both the native C++ AD layer (B4) and the Enzyme custom rules (B5) hang
-/// derivative rules on. Each function is side-effect-free and value-returning:
-/// it wraps the existing lazy-expression engine (`Expr::eval_to`) but presents a
-/// stable function signature, which is what makes a tape node or an Enzyme
-/// custom rule well-defined. These are the *only* operations the AD machinery
-/// knows about; everything underneath (SUMMA, MADWorld tasks, BLAS, MPI
-/// collectives) is opaque to it on purpose — see the autodiff plan's "narrow
-/// waist" rationale.
+/// The functional primitive surface of the AD layer. Each function is
+/// side-effect-free and returns a value. It wraps the lazy-expression engine
+/// (`Expr::eval_to`) behind a stable signature. That stable signature is what
+/// makes a tape node or a custom derivative rule well-defined.
 ///
-/// The full Part A primitive set is implemented here: `contract`, `add`,
-/// `subt`, `scale`, `permute`, `mult` (Hadamard), `conj`, `elementwise`, and
-/// the reductions `trace`/`sum`/`squared_norm`/`norm2`/`dot`/`inner_product`.
-/// The forward (`dual.h`) and reverse (`tape.h`) AD layers hang their JVP/VJP
-/// rules on exactly these functions.
+/// These are the only operations that the AD machinery knows about. Everything
+/// below them (SUMMA, MADWorld tasks, BLAS, MPI collectives) is opaque to it on
+/// purpose.
+///
+/// The set is `contract`, `add`, `subt`, `scale`, `permute`, `mult`
+/// (Hadamard), `conj`, `elementwise`, and the reductions `trace`, `sum`,
+/// `squared_norm`, `norm2`, `dot`, and `inner_product`. The forward layer
+/// (`dual.h`) and the reverse layer (`tape.h`) attach their JVP and VJP rules
+/// to these functions.
 
 namespace TiledArray::ad {
 
@@ -52,10 +51,10 @@ namespace detail {
 
 /// Build a canonical comma-separated annotation `"i0,i1,...,i{rank-1}"`.
 ///
-/// Used by the rank-agnostic elementwise primitives (`add`, `scale`) where the
-/// index labels are immaterial — only that every operand and the result share
-/// the same labels. Contraction, by contrast, takes its annotations explicitly
-/// because the index pattern *is* the operation.
+/// The rank-agnostic elementwise primitives (`add`, `scale`) use this because
+/// the index labels do not matter. Only one property matters: every operand
+/// and the result share the same labels. Contraction takes its annotations
+/// explicitly, because there the index pattern is the operation.
 inline std::string canonical_annotation(std::size_t rank) {
   std::string annot;
   for (std::size_t d = 0; d < rank; ++d) {
@@ -71,42 +70,41 @@ inline std::string canonical_annotation(std::size_t rank) {
 /// Tensor contraction `C = factor * (A * B)` under explicit Einstein
 /// annotations.
 ///
-/// This is the workhorse primitive: a single binary contraction expressed in
-/// TA's annotation form. The annotation triple fully determines the operation,
-/// including Hadamard, contracted, and external index groups, and any implicit
-/// permutation of the output — the expression engine resolves all of that.
+/// This is the primary primitive: one binary contraction in TA's annotation
+/// form. The annotation triple fully determines the operation. It gives the
+/// Hadamard, contracted, and external index groups, and any implicit
+/// permutation of the output. The expression engine resolves all of that.
 ///
 /// \param a left operand
 /// \param b right operand
-/// \param a_annot annotation for `a`, e.g. `"i,k"`
-/// \param b_annot annotation for `b`, e.g. `"k,j"`
-/// \param c_annot annotation for the result, e.g. `"i,j"`
+/// \param a_annot annotation for `a`, for example `"i,k"`
+/// \param b_annot annotation for `b`, for example `"k,j"`
+/// \param c_annot annotation for the result, for example `"i,j"`
 /// \param factor scalar prefactor folded into the contraction (the fused-gemm
-///        `factor`; its VJP carries `conj(factor)` per the scale rule — for
-///        real arrays simply `factor`)
-/// \return a freshly allocated result array on `a.world()`
+///        `factor`). Its VJP carries `conj(factor)`, which is `factor` for
+///        real arrays.
+/// \return a new result array on `a.world()`
 ///
-/// \note The functional waist is deliberately `beta = 0` (a fresh result). The
-///       in-place `beta * C` accumulation that `ContractReduce`/`Tensor::gemm`
-///       also support is modeled at the AD layer as an additive input whose VJP
-///       is a pass-through (Part A "Fused-gemm subtlety"); it is not part of
-///       this side-effect-free surface.
+/// \note This surface always uses `beta = 0`, thus the result is new. The AD
+///       layer models the in-place `beta * C` accumulation of
+///       `ContractReduce` and `Tensor::gemm` as an additive input whose VJP is
+///       a pass-through. That accumulation is not part of this
+///       side-effect-free surface.
 template <typename Array>
 Array contract(const Array& a, const Array& b, const std::string& a_annot,
                const std::string& b_annot, const std::string& c_annot,
                typename Array::numeric_type factor = 1) {
   Array c;
-  // set_world binds the evaluator to the left operand's world; a fresh `c`
-  // would otherwise fall back to get_default_world() and break multi-World use
-  // (CLAUDE.md, Expr::eval_to world-selection priority).
+  // set_world binds the evaluator to the world of the left operand. A fresh
+  // `c` falls back to get_default_world() and breaks multi-World use.
   c(c_annot) = (factor * (a(a_annot) * b(b_annot))).set_world(a.world());
   return c;
 }
 
 /// Elementwise sum `C = A + B`.
 ///
-/// Both operands must share the same tiled range; the (immaterial) index labels
-/// are generated canonically.
+/// Both operands must have the same tiled range. The index labels do not
+/// matter, thus the code generates them canonically.
 template <typename Array>
 Array add(const Array& a, const Array& b) {
   const std::string annot = detail::canonical_annotation(a.trange().rank());
@@ -135,10 +133,10 @@ Array subt(const Array& a, const Array& b) {
 
 /// Index permutation `C = P(A)`.
 ///
-/// The permutation is expressed as a change of annotation: `a` is read under
-/// `in_annot` and written under `out_annot` (e.g. `in_annot="i,j"`,
-/// `out_annot="j,i"` is a transpose). Its VJP is the inverse permutation —
-/// reading the cotangent under `out_annot` and writing under `in_annot`.
+/// A change of annotation gives the permutation. The code reads `a` under
+/// `in_annot` and writes it under `out_annot`. For example, `in_annot="i,j"`
+/// with `out_annot="j,i"` is a transpose. The VJP is the inverse permutation:
+/// it reads the cotangent under `out_annot` and writes it under `in_annot`.
 template <typename Array>
 Array permute(const Array& a, const std::string& in_annot,
               const std::string& out_annot) {
@@ -149,9 +147,9 @@ Array permute(const Array& a, const std::string& in_annot,
 
 /// Hadamard (elementwise) product `C = A ∘ B`.
 ///
-/// Both operands and the result share the same index labels, which is exactly
-/// what makes `a(annot) * b(annot)` an elementwise (rather than contracting)
-/// product in the expression engine.
+/// Both operands and the result share the same index labels. That is what
+/// makes `a(annot) * b(annot)` an elementwise product in the expression
+/// engine, and not a contraction.
 template <typename Array>
 Array mult(const Array& a, const Array& b) {
   const std::string annot = detail::canonical_annotation(a.trange().rank());
@@ -162,10 +160,9 @@ Array mult(const Array& a, const Array& b) {
 
 /// Complex conjugation `C = conj(A)`.
 ///
-/// A genuine primitive of the set (not a generic linear op): `conj` is
-/// *antilinear*, so its JVP is `conj(dA)` and its VJP is `conj(C̄)` (Part A).
-/// For real arrays it is the identity. Closing the primitive set under
-/// differentiation requires `conj` because the complex VJPs reference it.
+/// `conj` is antilinear, thus its JVP is `conj(dA)` and its VJP is `conj(C̄)`.
+/// For real arrays it is the identity. The primitive set needs `conj` to be
+/// closed under differentiation, because the complex VJPs use it.
 template <typename Array>
 Array conj(const Array& a) {
   const std::string annot = detail::canonical_annotation(a.trange().rank());
@@ -176,19 +173,19 @@ Array conj(const Array& a) {
 
 /// Apply a unary scalar function elementwise: `C(e) = f(A(e))`.
 ///
-/// `df = f'` is a *required* argument, not optional: a bare `f` is opaque to
-/// both the tape and Enzyme-as-atomic-primitive, so the derivative rule needs
-/// the caller-supplied derivative (Part A / B1). Forward evaluation uses only
-/// `f`; `df` is consumed by the JVP/VJP layers. `f` must be holomorphic (or
-/// real) for the elementwise VJP `Ā += conj(f'(A)) ∘ C̄` to be valid.
+/// `df = f'` is a required argument. A bare `f` is opaque to the tape and to a
+/// custom derivative rule, thus the rule needs the derivative from the caller.
+/// Forward evaluation uses only `f`. The JVP and VJP layers use `df`. `f` must
+/// be holomorphic or real to make the elementwise VJP `Ā += conj(f'(A)) ∘ C̄`
+/// valid.
 ///
 /// \tparam F   callable `numeric_type -> numeric_type` (the function)
 /// \tparam DF  callable `numeric_type -> numeric_type` (its derivative)
 template <typename Array, typename F, typename DF>
 Array elementwise(const Array& a, F f, DF /*df*/) {
-  // Build the result via foreach so the policy-correct sparse/dense path and
-  // the primal's tiling are reused. The void-returning op makes the sparse
-  // result inherit `a`'s sparsity pattern (the B3 lower-bound on structure).
+  // foreach reuses the policy-correct sparse or dense path and the tiling of
+  // the primal. The void-returning op makes a sparse result inherit the
+  // sparsity pattern of `a`, which is the lower bound on the structure.
   return TiledArray::foreach (
       a, [f](typename Array::value_type& out,
               const typename Array::value_type& in) { out = in.unary(f); });
@@ -217,8 +214,8 @@ typename Array::scalar_type squared_norm(const Array& a) {
 
 /// Frobenius norm `s = ‖A‖ = √squared_norm(A)`.
 ///
-/// \note The VJP `Ā += (s̄/‖A‖)·A` is undefined at `A = 0`; that guard lives in
-///       the derivative layers, not here.
+/// \note The VJP `Ā += (s̄/‖A‖)·A` is undefined at `A = 0`. The derivative
+///       layers hold that guard, not this function.
 template <typename Array>
 typename Array::scalar_type norm2(const Array& a) {
   using std::sqrt;
@@ -227,9 +224,9 @@ typename Array::scalar_type norm2(const Array& a) {
 
 /// Bilinear (unconjugated) inner product `s = Σ_e A(e)·B(e)`.
 ///
-/// This is TA's `dot`; it does **not** conjugate `A`. Its sesquilinear twin is
-/// `inner_product` below, and the two have *different* VJPs (Part A) — bind
-/// each to its own rule.
+/// This is TA's `dot`. It does not conjugate `A`. Its sesquilinear twin is
+/// `inner_product` below. The two have different VJPs, thus each one needs its
+/// own rule.
 template <typename Array>
 typename Array::numeric_type dot(const Array& a, const Array& b) {
   const std::string annot = detail::canonical_annotation(a.trange().rank());

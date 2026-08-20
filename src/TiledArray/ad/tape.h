@@ -38,40 +38,29 @@
 
 /// \file tape.h
 ///
-/// Reverse-mode (VJP) tape over the B1 primitives (autodiff plan B4, reverse
-/// component), covering the full Part A table.
+/// Reverse-mode (VJP) tape over the AD primitives.
 ///
-/// This is *define-by-run*: every primitive call appends a node carrying a
-/// closure for its VJP, so host control flow (`if`/loops) is handled for free —
-/// the tape records the branch actually taken — and reverse *issue order* is a
-/// valid topological order, so `backward` simply walks the nodes in reverse.
+/// The tape is define-by-run: every primitive call appends a node that holds a
+/// closure for its VJP. Host control flow needs no special support, because
+/// the tape records the branch that ran. Reverse issue order is a valid
+/// topological order, thus `backward` walks the nodes in reverse.
 ///
-/// Reverse-mode semantics designed in (each a documented failure mode in
-/// PyTorch's autograd / TF's tape):
+/// Four properties of the reverse pass:
+///   * Activity tracking. A `Var` carries an `active` flag, like
+///     `requires_grad` in PyTorch. An op with only inactive operands records
+///     nothing, thus constants get no shadow array.
+///   * Symbolic-zero shadows. An adjoint slot is null until the first write,
+///     thus an unconnected input has a zero gradient and allocates nothing.
+///   * Residual freeing. `backward` destroys each node closure as it consumes
+///     it, which frees tile storage during the pass.
+///   * Frozen-operand guard. TA arrays are shallow-copy handles, thus a saved
+///     residual aliases live user data. Operands of recorded ops must not
+///     change in place until `backward()` completes. The guard fingerprints
+///     the squared norm of each residual and measures it again at `backward`.
+///     To disable it, call `set_freeze_guard(false)`.
 ///
-///  * **Activity tracking.** A `Var`/`ScalarVar` carries an `active` flag
-///    (PyTorch's `requires_grad`). An op whose operands are all inactive
-///    records nothing and yields an inactive result; only active operands get
-///    a cotangent accumulated. This keeps constants (integrals, fixed
-///    intermediates) from each acquiring a shadow array — the ~2× memory tax
-///    the project exists to avoid.
-///  * **Symbolic-zero shadows (B2).** Adjoint slots are `Cotangent`s (array)
-///    or `std::optional` scalars: null until first written, so an unconnected
-///    input has a zero gradient with nothing allocated.
-///  * **Residual freeing.** Each node closure is destroyed as `backward`
-///    consumes it, releasing its saved operand handles so tile storage frees
-///    eagerly mid-pass.
-///  * **Frozen-operand guard.** TA arrays are shallow-copy handles, so a saved
-///    residual aliases live user data; mutating an operand in place between
-///    record and `backward()` would silently corrupt the gradient. The V1 rule
-///    is *operands of recorded ops are frozen until `backward()`*; it is
-///    enforced cheaply by fingerprinting each saved residual's squared norm at
-///    record time and re-checking at `backward` (the lightweight analogue of
-///    PyTorch's version counters). Disable with `set_freeze_guard(false)`.
-///
-/// Scalars (reduction outputs) live in a separate id space from arrays; their
-/// cotangents are stored as `numeric_type` (a real reduction's cotangent is a
-/// real value carried in that type).
+/// Scalars (reduction outputs) have their own id space. Their cotangents are
+/// `numeric_type` values.
 
 namespace TiledArray::ad {
 
@@ -96,8 +85,9 @@ S conj_scalar(const S& s) {
 
 /// Reverse-mode tape.
 ///
-/// Non-copyable / non-movable: `Var`s reference it by pointer and node closures
-/// capture it, so its address must be stable for its whole lifetime.
+/// The tape is not copyable and not movable. `Var` objects point to it and
+/// node closures capture it, thus its address must stay stable for its whole
+/// life.
 template <typename Array>
 class Tape {
  public:
@@ -107,10 +97,11 @@ class Tape {
   using cotangent_type = Cotangent<Array>;
   using node_type = std::function<void()>;
 
-  /// Whether the frozen-operand guard applies. It fingerprints a residual by
-  /// its squared norm, which must be a plain `scalar_type`. For a leaf `Array`
-  /// (a `DistArray`) it is; for a `Dual<...>` element (forward-over-reverse)
-  /// `squared_norm` returns a `DualScalar`, so the guard compiles out there.
+  /// Whether the frozen-operand guard applies. The guard fingerprints a
+  /// residual by its squared norm, which must be a plain `scalar_type`. It is
+  /// one for a leaf `Array` (a `DistArray`). For a `Dual<...>` element
+  /// (forward-over-reverse) `squared_norm` returns a `DualScalar`, thus the
+  /// guard compiles out.
   static constexpr bool guardable =
       std::is_same_v<decltype(ad::squared_norm(std::declval<const Array&>())),
                      scalar_type>;
@@ -121,28 +112,31 @@ class Tape {
   Tape(Tape&&) = delete;
   Tape& operator=(Tape&&) = delete;
 
-  /// Enable/disable the frozen-operand guard (on by default).
+  /// Turn the frozen-operand guard on or off. It is on by default.
   void set_freeze_guard(bool on) noexcept { freeze_guard_ = on; }
 
-  /// Register a new array variable; its adjoint starts as the symbolic zero.
+  /// Register a new array variable. Its adjoint starts as the symbolic zero.
   std::size_t make_variable() {
     const std::size_t id = adjoints_.size();
     adjoints_.emplace_back();
     return id;
   }
 
-  /// Register a new scalar variable; its adjoint starts as the symbolic zero.
+  /// Register a new scalar variable. Its adjoint starts as the symbolic
+  /// zero.
   std::size_t make_scalar_variable() {
     const std::size_t id = scalar_adjoints_.size();
     scalar_adjoints_.emplace_back();
     return id;
   }
 
-  /// Access an array variable's accumulated cotangent (possibly symbolic zero).
+  /// Access the accumulated cotangent of an array variable. It can be the
+  /// symbolic zero.
   cotangent_type& adjoint(std::size_t id) { return adjoints_[id]; }
   const cotangent_type& adjoint(std::size_t id) const { return adjoints_[id]; }
 
-  /// Access a scalar variable's accumulated cotangent (nullopt = symbolic zero).
+  /// Access the accumulated cotangent of a scalar variable. `nullopt` is the
+  /// symbolic zero.
   const std::optional<numeric_type>& scalar_adjoint(std::size_t id) const {
     return scalar_adjoints_[id];
   }
@@ -158,7 +152,7 @@ class Tape {
     slot = slot ? (*slot + delta) : delta;
   }
 
-  /// Record a VJP node (a closure run in reverse during `backward`).
+  /// Record a VJP node. `backward` runs these closures in reverse order.
   void push_node(node_type node) { nodes_.push_back(std::move(node)); }
 
   /// Register a saved residual for the frozen-operand guard.
@@ -169,14 +163,15 @@ class Tape {
     }
   }
 
-  /// Seed an array output's adjoint and run the reverse pass.
+  /// Seed the adjoint of an array output and run the reverse pass.
   void backward(std::size_t seed_id, Array seed) {
     verify_guards();
     accumulate_array(seed_id, std::move(seed));
     run_reverse();
   }
 
-  /// Seed a scalar output's adjoint (default `s̄ = 1`) and run the reverse pass.
+  /// Seed the adjoint of a scalar output and run the reverse pass. The
+  /// default seed is `s̄ = 1`.
   void backward(std::size_t seed_id, numeric_type seed = numeric_type{1}) {
     verify_guards();
     accumulate_scalar(seed_id, seed);
@@ -184,8 +179,8 @@ class Tape {
   }
 
  private:
-  /// Re-check every saved residual's fingerprint; throw if any operand was
-  /// mutated in place since it was recorded.
+  /// Measure the fingerprint of every saved residual again. Throw if an
+  /// operand changed in place after the record.
   void verify_guards() {
     if constexpr (guardable) {
       for (const auto& [residual, norm0] : guards_) {
@@ -220,10 +215,10 @@ class Tape {
   bool freeze_guard_ = true;
 };
 
-/// A reverse-mode array variable: a primal array plus its identity on a tape.
+/// A reverse-mode array variable: a primal array and its identity on a tape.
 ///
-/// Shallow-copy of the primal is intentional — `value` aliases the live array
-/// (the residual); see the freeze policy in the file header.
+/// The shallow copy of the primal is intentional. `value` aliases the live
+/// array (the residual). Read the freeze policy in the file header.
 template <typename Array>
 struct Var {
   Tape<Array>* tape = nullptr;
@@ -243,8 +238,8 @@ struct ScalarVar {
 
 /// Register an existing array as a leaf (input) variable on `tape`.
 ///
-/// \param requires_grad if false the leaf is a constant: it gets no shadow and
-///        ops consuming only constants record nothing (activity tracking).
+/// \param requires_grad if false, the leaf is a constant. It gets no shadow,
+///        and ops that consume only constants record nothing.
 template <typename Array>
 Var<Array> make_leaf(Tape<Array>& tape, Array value, bool requires_grad = true) {
   const std::size_t id = requires_grad ? tape.make_variable() : 0;
@@ -257,8 +252,9 @@ Var<Array> make_leaf(Tape<Array>& tape, Array value, bool requires_grad = true) 
 
 /// Reverse-mode `contract` `C = factor*A*B`.
 ///
-/// VJP (Part A, fused-`factor` carried as `conj(factor)`):
-///   Ā += conj(factor)·C̄·conj(B);  B̄ += conj(factor)·conj(A)·C̄.
+/// VJP, with the fused `factor` carried as `conj(factor)`:
+///   Ā += conj(factor)·C̄·conj(B)
+///   B̄ += conj(factor)·conj(A)·C̄
 template <typename Array>
 Var<Array> contract(const Var<Array>& a, const Var<Array>& b,
                     const std::string& a_annot, const std::string& b_annot,
@@ -280,7 +276,8 @@ Var<Array> contract(const Var<Array>& a, const Var<Array>& b,
     auto& cbar = tape->adjoint(c_id);
     if (cbar.is_zero()) return;
     const Array& C = cbar.value();
-    // conj(B), conj(A) implement the complex VJP; no-ops for real arrays.
+    // conj(B) and conj(A) give the complex VJP. Both are no-ops for real
+    // arrays.
     if (aa)
       tape->accumulate_array(
           a_id, ad::contract(C, ad::conj(B), c_annot, b_annot, a_annot, cfactor));
@@ -293,9 +290,9 @@ Var<Array> contract(const Var<Array>& a, const Var<Array>& b,
 
 namespace detail {
 
-/// Common scaffold for a binary array->array op: compute primal, handle
-/// activity, register the node. `vjp` receives the result cotangent `C` and
-/// must accumulate into the active operands.
+/// Common scaffold for a binary array-to-array op. It computes the primal,
+/// handles activity, and registers the node. `vjp` gets the result cotangent
+/// `C` and must accumulate into the active operands.
 template <typename Array, typename VJP>
 Var<Array> record_binary(const Var<Array>& a, const Var<Array>& b, Array primal,
                          VJP vjp) {
@@ -311,7 +308,7 @@ Var<Array> record_binary(const Var<Array>& a, const Var<Array>& b, Array primal,
   return Var<Array>{tape, c_id, std::move(primal), true};
 }
 
-/// Common scaffold for a unary array->array op.
+/// Common scaffold for a unary array-to-array op.
 template <typename Array, typename VJP>
 Var<Array> record_unary(const Var<Array>& a, Array primal, VJP vjp) {
   if (!a.active) return Var<Array>{a.tape, 0, std::move(primal), false};
@@ -327,7 +324,7 @@ Var<Array> record_unary(const Var<Array>& a, Array primal, VJP vjp) {
 
 }  // namespace detail
 
-/// Reverse-mode `add`: Ā += C̄; B̄ += C̄.
+/// Reverse-mode `add`: Ā += C̄ and B̄ += C̄.
 template <typename Array>
 Var<Array> add(const Var<Array>& a, const Var<Array>& b) {
   Tape<Array>* tape = a.tape;
@@ -340,7 +337,7 @@ Var<Array> add(const Var<Array>& a, const Var<Array>& b) {
                                });
 }
 
-/// Reverse-mode `subt`: Ā += C̄; B̄ += -C̄.
+/// Reverse-mode `subt`: Ā += C̄ and B̄ += -C̄.
 template <typename Array>
 Var<Array> subt(const Var<Array>& a, const Var<Array>& b) {
   Tape<Array>* tape = a.tape;
@@ -355,7 +352,7 @@ Var<Array> subt(const Var<Array>& a, const Var<Array>& b) {
       });
 }
 
-/// Reverse-mode Hadamard `mult`: Ā += C̄∘conj(B); B̄ += conj(A)∘C̄.
+/// Reverse-mode Hadamard `mult`: Ā += C̄∘conj(B) and B̄ += conj(A)∘C̄.
 template <typename Array>
 Var<Array> mult(const Var<Array>& a, const Var<Array>& b) {
   Tape<Array>* tape = a.tape;
@@ -481,7 +478,7 @@ ScalarVar<Array> trace(const Var<Array>& a) {
   });
 }
 
-/// Reverse-mode `squared_norm`: Ā += 2·s̄·A (s̄ real).
+/// Reverse-mode `squared_norm`: Ā += 2·s̄·A, with a real s̄.
 template <typename Array>
 ScalarVar<Array> squared_norm(const Var<Array>& a) {
   using S = typename Array::numeric_type;
@@ -495,7 +492,7 @@ ScalarVar<Array> squared_norm(const Var<Array>& a) {
       });
 }
 
-/// Reverse-mode `norm2`: Ā += (s̄/‖A‖)·A (undefined at A = 0).
+/// Reverse-mode `norm2`: Ā += (s̄/‖A‖)·A. It is undefined at A = 0.
 template <typename Array>
 ScalarVar<Array> norm2(const Var<Array>& a) {
   using S = typename Array::numeric_type;
@@ -537,7 +534,7 @@ ScalarVar<Array> record_binary_reduction(const Var<Array>& a,
 
 }  // namespace detail
 
-/// Reverse-mode bilinear `dot`: Ā += s̄·conj(B); B̄ += s̄·conj(A).
+/// Reverse-mode bilinear `dot`: Ā += s̄·conj(B) and B̄ += s̄·conj(A).
 template <typename Array>
 ScalarVar<Array> dot(const Var<Array>& a, const Var<Array>& b) {
   using S = typename Array::numeric_type;
@@ -554,7 +551,7 @@ ScalarVar<Array> dot(const Var<Array>& a, const Var<Array>& b) {
       });
 }
 
-/// Reverse-mode sesquilinear `inner_product`: Ā += conj(s̄)·B; B̄ += s̄·A.
+/// Reverse-mode sesquilinear `inner_product`: Ā += conj(s̄)·B and B̄ += s̄·A.
 template <typename Array>
 ScalarVar<Array> inner_product(const Var<Array>& a, const Var<Array>& b) {
   using S = typename Array::numeric_type;

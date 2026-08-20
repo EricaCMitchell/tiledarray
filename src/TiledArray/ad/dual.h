@@ -31,24 +31,22 @@
 
 /// \file dual.h
 ///
-/// Forward-mode AD (autodiff plan B4, forward component): a `Dual<Array>`
-/// carries `{primal, tangent}` and every functional primitive produces the
-/// paired primal+tangent per the JVP column of the Part A table. This mode is
-/// cheap (no tape) and ideal when the number of input perturbations is small.
+/// Forward-mode AD. A `Dual<Array>` carries `{primal, tangent}`, and every
+/// functional primitive produces the paired primal and tangent. This mode is
+/// cheap, because it needs no tape. Use it when the number of input
+/// perturbations is small.
 ///
-/// The tangent is a **symbolic zero** until something flows into it (a null
-/// `std::optional`), mirroring the reverse-mode shadow's symbolic zero (B2):
-/// a constant operand (`make_constant`) carries no tangent, an op over
-/// only-constant operands produces no tangent, and no array is allocated for a
-/// gradient direction that never gets touched. This sidesteps the
-/// `SparsePolicy` `fill(0)` footgun and gives "unconnected input ⇒ zero
-/// tangent" for free.
+/// The tangent is a symbolic zero until something flows into it. A null
+/// `std::optional` holds that state, as the reverse-mode shadow does. A
+/// constant operand (`make_constant`) carries no tangent, an op over only
+/// constant operands produces no tangent, and an untouched gradient direction
+/// allocates no array. This prevents the `SparsePolicy` `fill(0)` problem and
+/// gives a zero tangent for an unconnected input at no cost.
 ///
-/// Reductions return a `DualScalar<S>` (primal + tangent scalars). Because the
-/// forward ops are themselves expressed in the B1 primitives, a `Dual` whose
-/// `Array` is a reverse-mode `Var` composes into forward-over-reverse — the
-/// route to Hessian-vector products (see the autodiff plan's higher-order note
-/// and the HVP test).
+/// Reductions return a `DualScalar<S>`, which holds a primal scalar and a
+/// tangent scalar. The forward ops use the same primitives as the rest of the
+/// layer. Thus a `Dual` whose `Array` is a reverse-mode `Var` composes into
+/// forward-over-reverse, which is the route to Hessian-vector products.
 
 namespace TiledArray::ad {
 
@@ -59,16 +57,16 @@ struct DualScalar {
   S tangent{};
 };
 
-/// An array dual number: a primal `Array` plus an optional tangent `Array`.
+/// An array dual number: a primal `Array` and an optional tangent `Array`.
 ///
-/// `tangent == std::nullopt` is the symbolic zero (no tangent flows here).
+/// `tangent == std::nullopt` is the symbolic zero: no tangent flows here.
 ///
-/// The `numeric_type`/`scalar_type` aliases (forwarded from the underlying
-/// `Array`) let a reverse-mode `Tape<Dual<Array>>` treat a dual as its element
-/// type — the mechanism behind forward-over-reverse (Hessian-vector products):
-/// the tape's VJP closures, being expressed purely in B1 primitives, dispatch
-/// to the dual overloads below and carry the forward tangent through the
-/// backward pass.
+/// The `numeric_type` and `scalar_type` aliases come from the underlying
+/// `Array`. They let a reverse-mode `Tape<Dual<Array>>` treat a dual as its
+/// element type, which is the mechanism behind forward-over-reverse
+/// (Hessian-vector products). The VJP closures of the tape use only the
+/// primitives, thus they dispatch to the dual overloads below and carry the
+/// forward tangent through the backward pass.
 template <typename Array>
 struct Dual {
   using numeric_type = typename Array::numeric_type;
@@ -186,7 +184,8 @@ Dual<Array> conj(const Dual<Array>& a) {
   return Dual<Array>{std::move(primal), std::move(t)};
 }
 
-/// JVP of unary `elementwise` f: `f'(A) ∘ dA` (holomorphic / real `f` only).
+/// JVP of unary `elementwise` f: `f'(A) ∘ dA`. `f` must be holomorphic or
+/// real.
 template <typename Array, typename F, typename DF>
 Dual<Array> elementwise(const Dual<Array>& a, F f, DF df) {
   Array primal = ad::elementwise(a.primal, f, df);
@@ -225,7 +224,7 @@ DualScalar<typename Array::scalar_type> squared_norm(const Dual<Array>& a) {
   return DualScalar<S>{primal, tangent};
 }
 
-/// JVP of `norm2`: `Re⟨A, dA⟩ / ‖A‖` (undefined at `A = 0`).
+/// JVP of `norm2`: `Re⟨A, dA⟩ / ‖A‖`. It is undefined at `A = 0`.
 template <typename Array>
 DualScalar<typename Array::scalar_type> norm2(const Dual<Array>& a) {
   using S = typename Array::scalar_type;

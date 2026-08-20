@@ -31,57 +31,41 @@
 
 /// \file shadow.h
 ///
-/// Adjoint/tangent "shadow" infrastructure (autodiff plan B2).
+/// Adjoint and tangent ("shadow") array infrastructure.
 ///
-/// A derivative needs an array that mirrors a primal's distributed/sparse
-/// structure. Because `DistArray`'s `shape_`/`pmap_` are `shared_ptr<const>`
-/// (`tensor_impl.h`), a shadow can share them with the primal at no copy cost.
+/// A derivative needs an array that mirrors the distributed and sparse
+/// structure of a primal. `DistArray` holds `shape_` and `pmap_` as
+/// `shared_ptr<const>` members, thus a shadow shares them at no copy cost.
 ///
-/// The central design choice is the **symbolic zero**: an adjoint slot is left
-/// *null* until something is first written into it, exactly like PyTorch's
-/// lazily-allocated `.grad` and JAX's symbolic zeros. This:
-///   * sidesteps the `SparsePolicy` `fill(0)` footgun (zero-seeding a sparse
-///     array yields an *empty* array because the shape rejects below-threshold
-///     tiles — CLAUDE.md), and
-///   * gives "unconnected input ⇒ zero gradient" for free without spending
-///     memory on accumulators that are never touched.
+/// An adjoint slot stays null until the first write into it (the symbolic
+/// zero), as in the lazy `.grad` of PyTorch. A zero-seeded sparse array is
+/// empty, because the shape rejects below-threshold tiles. The symbolic zero
+/// prevents that, and it gives a zero gradient for an unconnected input at no
+/// memory cost.
 ///
-/// **B3 — cotangent-sparsity policy (decision, pinned in Phase 0).** For
-/// `SparsePolicy`, an adjoint's sparsity is governed by *its own* per-tile
-/// Frobenius norms vs the global threshold, which need not match the primal's
-/// pattern. To keep gradients reproducible in *structure* (not merely in value)
-/// the policy is:
-///   1. **Lower bound = primal operand's shape.** A materialized adjoint mirror
-///      inherits the corresponding primal operand's shape (`make_shadow` builds
-///      it from `arg.shape()`), so every tile that could carry gradient has a
-///      slot. This is the deterministic part — it does not depend on the
-///      (data-dependent) norms of the accumulated cotangent.
-///   2. **Re-screen by norm after accumulation.** Once contributions are summed
-///      in, below-threshold tiles may be dropped by the ordinary `SparseShape`
-///      screening, exactly as for any sparse result. Re-screening *narrows* the
-///      structure but never widens it past the step-1 lower bound, so the result
-///      is a deterministic function of the operand shapes, not of accumulation
-///      order.
-/// The symbolic-zero `Cotangent` path defers materialization until first write
-/// and so trivially satisfies the step-1 lower-bound rule; step 2's re-screen
-/// happens automatically because cotangent contributions are produced by the
-/// sparse-aware B1 ops (`ad::add`/`contract`/...), whose results are screened by
-/// the ordinary `SparseShape` norm threshold. The resulting structure is a
-/// deterministic function of the operand shapes — verified on block-sparse
-/// inputs in `tests/ad_sparse.cpp`.
+/// Cotangent sparsity for `SparsePolicy` follows two rules:
+///   1. The shape of the primal operand is the lower bound. A materialized
+///      mirror inherits it from `make_shadow`, thus every tile that can carry
+///      gradient has a slot.
+///   2. The ordinary `SparseShape` screening then drops below-threshold tiles.
+///      It narrows the structure, but never widens it past rule 1.
+///
+/// The result is a deterministic function of the operand shapes, and not of
+/// the accumulation order. `tests/ad_sparse.cpp` tests it on block-sparse
+/// inputs.
 
 namespace TiledArray::ad {
 
-/// Construct a structurally-identical, *empty* mirror of `arg`.
+/// Construct an empty mirror of `arg` with the same structure.
 ///
-/// The result shares `arg`'s tiled range, shape, and pmap (the latter two via
-/// the primal's `shared_ptr<const>` members, so this is cheap) but has no tiles
-/// set. It is the materialized accumulator one would use when a real zero array
-/// is genuinely required; the default adjoint-accumulation path uses the
-/// symbolic zero of `Cotangent` instead and never calls this.
+/// The result shares the tiled range, shape, and pmap of `arg`. The shape and
+/// the pmap come from `shared_ptr<const>` members, thus the copy is cheap. No
+/// tiles are set. Use this function when the code needs a real zero array. The
+/// default adjoint-accumulation path uses the symbolic zero of `Cotangent` and
+/// never calls it.
 ///
-/// \note This deliberately does **not** `fill(0)`: doing so would empty a
-///       `SparsePolicy` array (the CLAUDE.md sparse-fill footgun).
+/// \note This function does not `fill(0)`. A `fill(0)` empties a
+///       `SparsePolicy` array.
 template <typename Array>
 Array make_shadow(const Array& arg) {
   return Array(arg.world(), arg.trange(), arg.shape(), arg.pmap());
@@ -89,12 +73,11 @@ Array make_shadow(const Array& arg) {
 
 /// A cotangent (adjoint) accumulator with a symbolic-zero state.
 ///
-/// Holds either nothing (the symbolic zero) or a materialized `Array`. Reverse-
-/// mode fan-in (`Ā += …`) is `accumulate`: the first contribution moves/copies
-/// the delta in; subsequent contributions sum in place via the existing array
-/// `+=` (the `add_to` family). Fan-out in the forward program — one array
-/// consumed by several ops — is precisely what these summed contributions
-/// encode (Part A table's `+=`).
+/// It holds nothing (the symbolic zero) or a materialized `Array`.
+/// `accumulate` does the reverse-mode fan-in `Ā += …`. The first contribution
+/// moves or copies the delta in. Later contributions sum in place with the
+/// array `+=` (the `add_to` family). These summed contributions encode the
+/// fan-out of the forward program, where several ops consume one array.
 template <typename Array>
 class Cotangent {
  public:
@@ -105,10 +88,10 @@ class Cotangent {
 
   /// Fan-in one cotangent contribution.
   ///
-  /// First call moves the delta in (no arithmetic); later calls sum it in via
-  /// `ad::add`. Using the functional `add` (rather than the raw expression
-  /// engine) keeps `Cotangent` element-type-agnostic, so it also works when
-  /// `Array` is itself a `Dual` (forward-over-reverse). `delta` is consumed.
+  /// The first call moves the delta in with no arithmetic. Later calls sum it
+  /// in with `ad::add`. The functional `add` keeps `Cotangent` agnostic of the
+  /// element type, thus `Cotangent` also works when `Array` is a `Dual`
+  /// (forward-over-reverse). This function consumes `delta`.
   void accumulate(Array delta) {
     if (!value_) {
       value_ = std::move(delta);
@@ -123,15 +106,17 @@ class Cotangent {
     return *value_;
   }
 
-  /// Lower the symbolic zero to a concrete value, returning the accumulated
-  /// array if non-zero or else an explicit structural zero shaped like `like`.
+  /// Lower the symbolic zero to a concrete value.
   ///
-  /// Most callers should branch on `is_zero()` and propagate the symbolic zero
-  /// instead; this exists for the few places (e.g. tests) that want a concrete
-  /// array unconditionally.
+  /// \return the accumulated array, or an explicit structural zero with the
+  ///         shape of `like`.
+  ///
+  /// Most callers must branch on `is_zero()` and propagate the symbolic zero.
+  /// This function exists for the few places, such as tests, that need a
+  /// concrete array in all cases.
   Array value_or_zero(const Array& like) const {
     if (value_) return *value_;
-    // 0 * like routes through the engine and yields the policy-correct zero:
+    // 0 * like routes through the engine and gives the policy-correct zero:
     // explicit zero tiles for DensePolicy, an empty array for SparsePolicy.
     return ad::scale(like, typename Array::numeric_type{0});
   }
